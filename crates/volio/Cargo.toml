@@ -1,0 +1,19 @@
+[package]
+name = "volio"
+edition.workspace = true
+version.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+thiserror.workspace = true
+glam.workspace = true
+rayon.workspace = true
+walkdir.workspace = true
+dicom-object.workspace = true
+dicom-dictionary-std.workspace = true
+dicom-pixeldata.workspace = true
+dicom-core.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+tempfile = "3"

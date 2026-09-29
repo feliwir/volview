@@ -1,0 +1,527 @@
+#version 460
+#extension GL_GOOGLE_include_directive : require
+// Progressive Monte Carlo path tracing of the volume.
+//
+// Each invocation traces `u.path.z` paths through its pixel and adds them to the
+// accumulation image; the running mean goes to the HDR image for tone mapping.
+// Free-flight distances are sampled by ray marching to a random optical depth.
+// At each scattering event a surface-like point (by surfaceness) reflects with
+// the BRDF, otherwise light scatters in the volume with an isotropic phase
+// function; the material's subsurface amount turns part of the surface events
+// into volume events, so light random-walks into tissue (after Kroes et al.,
+// "Exposure Render: an interactive photo-realistic volume rendering framework",
+// 2012). Volume events scatter forward like real tissue (Henyey-Greenstein),
+// with a single-scattering albedo chosen so that many events reproduce the
+// material colour; wet tissue has a glossy clear coat on top.
+// The key light (a disc) and a light map are sampled at every event through
+// traced shadow rays; paths that leave the volume pick up the environment and
+// the key light. Both are combined with the BSDF/phase sampling by multiple
+// importance sampling (Veach 1997). A thin lens gives depth of field.
+//
+// Tissue that scatters below its surface is more transparent to red than to
+// blue light, so red diffuses further and thin tissue glows reddish. Each path
+// tracks distances with one randomly chosen colour channel (the "hero") and
+// weights the others by their probability ratios, combined over the channels by
+// the balance heuristic (spectral MIS, as in pbrt-v4's volumetric integrator).
+
+#include "common.glsl"
+#include "shading.glsl"
+
+layout(local_size_x = 8, local_size_y = 8) in;
+
+// Bound used when empty-space skipping is off (together with the label opacity):
+// the densest transfer function preset reaches 4/mm.
+const float MAX_EXTINCTION = 8.0;
+
+layout(set = 0, binding = 17, rgba32f) uniform image2D accum_image;   // rgb radiance, a background
+// Guides for the denoiser, accumulated like the radiance (first scattering event).
+layout(set = 0, binding = 18, rgba32f) uniform image2D guide_albedo_image;  // rgb albedo, a luminance^2
+layout(set = 0, binding = 19, rgba32f) uniform image2D guide_normal_image; // rgb normal, a depth
+
+// PCG random numbers (Jarzynski and Olano, "Hash functions for GPU rendering", 2020).
+uint rng;
+
+uint pcg() {
+    uint state = rng;
+    rng = rng * 747796405u + 2891336453u;
+    uint word = ((state >> ((state >> 28u) + 4u)) ^ state) * 277803737u;
+    return (word >> 22u) ^ word;
+}
+
+float rand() {
+    return float(pcg() >> 8) * (1.0 / 16777216.0);
+}
+
+// Radiance arriving from direction `d` for paths that leave the volume.
+vec3 environment(vec3 d) {
+    if (u.lighting.w == 2u) {
+        return env_map_radiance(d);
+    }
+    if (u.lighting.w == 1u) {
+        // Photo studio, fixed to the camera like the key light: a broad fill
+        // from the camera side opposite the key, a rim light behind and above
+        // the subject that outlines silhouettes, dark elsewhere. The lobes are
+        // normalised so the mean over the sphere is the ambient radiance.
+        vec3 f = normalize(u.forward.xyz);
+        vec3 r = normalize(u.right.xyz);
+        vec3 up = normalize(u.up.xyz);
+        float key_side = dot(u.light_dir.xyz, r) >= 0.0 ? 1.0 : -1.0;
+        vec3 fill = normalize(-f - 0.9 * key_side * r - 0.1 * up);
+        vec3 rim = normalize(f + 0.8 * up - 0.4 * key_side * r);
+        float fill_lobe = 0.5 * pow(max(dot(d, fill), 0.0), 6.0);   // mean 0.5 / 14
+        float rim_lobe = 2.5 * pow(max(dot(d, rim), 0.0), 24.0);    // mean 2.5 / 50
+        vec3 studio = vec3(0.02) + fill_lobe * vec3(0.95, 0.98, 1.05) + rim_lobe * vec3(0.9, 0.95, 1.1);
+        return u.ambient.rgb * studio * (1.0 / 0.106);
+    }
+    // Soft dome: brighter above (patient superior, +z), averaging to the
+    // ambient radiance over the sphere.
+    float up = 0.5 + 0.5 * d.z;
+    vec3 sky = vec3(0.92, 0.96, 1.04);
+    vec3 ground = vec3(1.04, 1.0, 0.94);
+    return u.ambient.rgb * mix(ground * 0.35, sky, up) / 0.675;
+}
+
+// Orthonormal basis around `n` (Duff et al., "Building an orthonormal basis, revisited", 2017).
+mat3 basis(vec3 n) {
+    float s = n.z >= 0.0 ? 1.0 : -1.0;
+    float a = -1.0 / (s + n.z);
+    float b = n.x * n.y * a;
+    vec3 t = vec3(1.0 + s * n.x * n.x * a, s * b, -s * n.x);
+    vec3 bt = vec3(b, s + n.y * n.y * a, -n.y);
+    return mat3(t, bt, n);
+}
+
+// Direction towards a random point of the key light, a disc of angular radius
+// `u.material.w` around `u.light_dir`: an area light, so shadows get penumbras.
+vec3 sample_light(mat3 frame) {
+    float cos_max = cos(u.material.w);
+    float cos_t = mix(cos_max, 1.0, rand());
+    float sin_t = sqrt(max(0.0, 1.0 - cos_t * cos_t));
+    float phi = 2.0 * PI * rand();
+    return frame * vec3(sin_t * cos(phi), sin_t * sin(phi), cos_t);
+}
+
+vec3 uniform_sphere() {
+    float z = 1.0 - 2.0 * rand();
+    float r = sqrt(max(0.0, 1.0 - z * z));
+    float phi = 2.0 * PI * rand();
+    return vec3(r * cos(phi), r * sin(phi), z);
+}
+
+// Volume events per path, besides the surface bounce limit.
+const uint MAX_VOLUME_EVENTS = 32u;
+
+// Single-scattering albedo whose multiple scattering in a thick slab reflects
+// `a` overall (fit by Chiang, Kutz and Burley, "Practical and controllable
+// subsurface scattering for production path tracing", 2016). Material colours
+// are what the surface looks like; multiplying each event by them would darken
+// and saturate light that scatters many times.
+vec3 single_scattering_albedo(vec3 a) {
+    a = clamp(a, 0.0, 0.999);
+    vec3 s = 4.09712 + 4.20863 * a - sqrt(9.59217 + 41.6808 * a + 17.7126 * a * a);
+    return 1.0 - s * s;
+}
+
+// Relative extinction per colour channel (rgb) of tissue that scatters below
+// its surface, after the mean free paths of skin (Jensen et al. 2001): red
+// travels about three times as far as blue.
+const vec3 TISSUE_CHROMA = vec3(0.35, 0.65, 1.0);
+
+vec3 chroma(Sample s) {
+    // Ghosted context shells are illustrative: a thin shell would scatter
+    // mostly blue (the channel it stops most) and look like ice.
+    if (s.ghost) {
+        return vec3(1.0);
+    }
+    return mix(vec3(1.0), TISSUE_CHROMA, clamp(2.0 * s.subsurface, 0.0, 1.0) * u.env.w);
+}
+
+// Henyey-Greenstein phase function for the angle between the propagation
+// directions before and after scattering.
+float phase_hg(float cos_t) {
+    float g = u.env.z;
+    float d = 1.0 + g * g - 2.0 * g * cos_t;
+    return (1.0 - g * g) / (4.0 * PI * d * sqrt(max(d, 1e-8)));
+}
+
+vec3 sample_hg(vec3 dir) {
+    float g = u.env.z;
+    float cos_t;
+    if (abs(g) < 1e-3) {
+        cos_t = 1.0 - 2.0 * rand();
+    } else {
+        float q = (1.0 - g * g) / (1.0 - g + 2.0 * g * rand());
+        cos_t = clamp((1.0 + g * g - q * q) / (2.0 * g), -1.0, 1.0);
+    }
+    float sin_t = sqrt(max(0.0, 1.0 - cos_t * cos_t));
+    float phi = 2.0 * PI * rand();
+    return basis(dir) * vec3(sin_t * cos(phi), sin_t * sin(phi), cos_t);
+}
+
+// Power heuristic weight of a strategy with pdf `a` against one with pdf `b`.
+float mis(float a, float b) {
+    return a * a / max(a * a + b * b, 1e-20);
+}
+
+// Solid-angle pdf of sampling direction `d` from the light map.
+float env_pdf(vec3 d) {
+    ivec2 size = textureSize(env_tex, 0);
+    vec2 uv = env_uv(d);
+    ivec2 texel = min(ivec2(uv * vec2(size)), size - 1);
+    float p = texelFetch(env_table_tex, texel, 0).g;
+    return p * float(size.x * size.y) / (2.0 * PI * PI * max(sin(uv.y * PI), 1e-6));
+}
+
+// Direction towards the light map drawn proportionally to its luminance
+// (piecewise constant over texels: marginal over rows, then conditional over
+// the row's columns, both by binary search of their CDFs).
+vec3 sample_env(out float pdf) {
+    ivec2 size = textureSize(env_tex, 0);
+    float xi = rand();
+    int lo = 0;
+    int hi = size.y - 1;
+    while (lo < hi) {
+        int mid = (lo + hi) / 2;
+        if (texelFetch(env_table_tex, ivec2(size.x, mid), 0).r >= xi) {
+            hi = mid;
+        } else {
+            lo = mid + 1;
+        }
+    }
+    int y = lo;
+    xi = rand();
+    lo = 0;
+    hi = size.x - 1;
+    while (lo < hi) {
+        int mid = (lo + hi) / 2;
+        if (texelFetch(env_table_tex, ivec2(mid, y), 0).r >= xi) {
+            hi = mid;
+        } else {
+            lo = mid + 1;
+        }
+    }
+    vec2 uv = (vec2(lo, y) + vec2(rand(), rand())) / vec2(size);
+    float p = texelFetch(env_table_tex, ivec2(lo, y), 0).g;
+    pdf = p * float(size.x * size.y) / (2.0 * PI * PI * max(sin(uv.y * PI), 1e-6));
+    return env_direction(uv);
+}
+
+// Surface events sample the clear coat's GGX lobe with probability
+// coat_share, else the tissue's GGX lobe (specular_share) or its cosine lobe.
+float coat_share(Sample s) {
+    return 0.5 * s.coat;
+}
+
+float specular_share(Sample s) {
+    return mix(0.2, 1.0, s.metalness);
+}
+
+// Solid-angle pdf of GGX half-vector sampling with alpha `a` (roughness^2).
+float ggx_pdf(vec3 n, vec3 v, vec3 l, float a) {
+    vec3 h = normalize(v + l);
+    float nh = max(dot(n, h), 0.0);
+    return ggx_distribution(nh, a * a) * nh / (4.0 * max(dot(v, h), 1e-4));
+}
+
+vec3 sample_ggx(mat3 frame, vec3 v, float a) {
+    float a2 = a * a;
+    float phi = 2.0 * PI * rand();
+    float xi = rand();
+    float cos_t = sqrt((1.0 - xi) / (1.0 + (a2 - 1.0) * xi));
+    float sin_t = sqrt(max(0.0, 1.0 - cos_t * cos_t));
+    vec3 h = frame * vec3(sin_t * cos(phi), sin_t * sin(phi), cos_t);
+    return reflect(-v, h);
+}
+
+// Solid-angle pdf of the surface event's direction sampling (see main).
+float bsdf_pdf(vec3 n, vec3 v, vec3 l, Sample s) {
+    float nl = dot(n, l);
+    if (nl <= 0.0) {
+        return 0.0;
+    }
+    float a = max(s.roughness * s.roughness, 2e-3);
+    float share = specular_share(s);
+    float base = share * ggx_pdf(n, v, l, a) + (1.0 - share) * nl / PI;
+    float coat = coat_share(s);
+    return coat * ggx_pdf(n, v, l, COAT_ROUGHNESS * COAT_ROUGHNESS) + (1.0 - coat) * base;
+}
+
+// Opacity along a ray as the renderer sees it: labels applied, clip planes
+// respected. Ghosted structures keep only their shell (see surface_frame).
+float extinction_at(vec3 idx, vec3 dir, bool smooth_density, out Sample s, out int cap_plane, out float cut) {
+    cut = clip_depth(idx, cap_plane);
+    if (cut > 0.0) {
+        return 0.0;
+    }
+    s = apply_labels(tf_point(smooth_density ? density_view(idx) : density_at_index(idx)), idx);
+    if (s.extinction <= 0.0) {
+        return 0.0;
+    }
+    if (s.ghost) {
+        vec3 n;
+        float surfaceness;
+        return s.extinction * surface_frame(idx, s, -dir, cap_plane, cut, 0.0, n, surfaceness);
+    }
+    return s.extinction;
+}
+
+// Samples a free-flight distance along the ray by delta (Woodcock) tracking
+// against the per-brick extinction bound: tentative collisions at exponential
+// distances, accepted with probability extinction / bound. Empty bricks are
+// crossed in one step. Returns false if the ray leaves the volume first.
+// Collisions are decided by the `hero` channel's extinction; `spectral` takes
+// the other channels' probability ratios.
+bool free_flight(
+    vec3 origin, vec3 dir, bool smooth_density, int hero, inout vec3 spectral,
+    out vec3 idx, out Sample s, out int cap_plane, out float cut
+) {
+    vec3 d_idx = mat3(u.world_to_index) * dir;
+    vec2 t = intersect_volume(origin, d_idx);
+    float tt = t.x;
+    for (int i = 0; i < 4096 && tt < t.y; i++) {
+        vec3 p = origin + d_idx * tt;
+        float majorant = min(brick_majorant(p), max(MAX_EXTINCTION, u.labels.z));
+        float exit = tt + brick_exit(p, d_idx) + 1e-3;
+        if (majorant <= 0.0) {
+            tt = exit;
+            continue;
+        }
+        float next = tt - log(1.0 - rand()) / majorant;
+        if (next >= exit) {
+            tt = exit;  // memoryless: restart the flight in the next brick
+            continue;
+        }
+        tt = next;
+        idx = origin + d_idx * tt;
+        float extinction = extinction_at(idx, dir, smooth_density, s, cap_plane, cut);
+        if (extinction <= 0.0) {
+            continue;  // certainly a null collision, for every channel
+        }
+        vec3 sigma = extinction * chroma(s);
+        if (rand() * majorant < sigma[hero]) {
+            spectral *= sigma / sigma[hero];
+            return true;
+        }
+        spectral *= max(majorant - sigma, 0.0) / (majorant - sigma[hero]);
+    }
+    return false;
+}
+
+// Transmittance from `origin` towards `dir` until the ray leaves the volume, by
+// ratio tracking against the brick bounds, per colour channel. Uses
+// sample_point, so ghosted structures cast no shadow, as in the ray marcher.
+vec3 transmittance(vec3 origin, vec3 dir) {
+    vec3 d_idx = mat3(u.world_to_index) * dir;
+    vec2 t = intersect_volume(origin, d_idx);
+    float tt = t.x;
+    vec3 result = vec3(1.0);
+    for (int i = 0; i < 4096 && tt < t.y; i++) {
+        // Russian roulette once little light gets through: unbiased, and it cuts
+        // the long tails of red light, which travels far through tissue.
+        float peak = max(result.r, max(result.g, result.b));
+        if (peak < 0.1) {
+            if (rand() * 0.1 >= peak) {
+                return vec3(0.0);
+            }
+            result *= 0.1 / peak;
+        }
+        vec3 p = origin + d_idx * tt;
+        float majorant = min(brick_majorant(p), max(MAX_EXTINCTION, u.labels.z));
+        float exit = tt + brick_exit(p, d_idx) + 1e-3;
+        if (majorant <= 0.0) {
+            tt = exit;
+            continue;
+        }
+        float next = tt - log(1.0 - rand()) / majorant;
+        if (next >= exit) {
+            tt = exit;
+            continue;
+        }
+        tt = next;
+        Sample m = sample_point(origin + d_idx * tt);
+        result *= max(1.0 - m.extinction * chroma(m) / majorant, 0.0);
+    }
+    return result;
+}
+
+void main() {
+    uvec2 pixel = gl_GlobalInvocationID.xy;
+    if (any(greaterThanEqual(pixel, u.flags.zw))) {
+        return;
+    }
+    rng = (pixel.x * 1973u + pixel.y * 9277u + u.path.x * 26699u) | 1u;
+    pcg();
+
+    uint samples = u.path.z;
+    uint max_bounces = u.path.y;
+    float step_mm = u.dims.w;
+    mat3 light_frame = basis(u.light_dir.xyz);
+    vec3 light = vec3(u.light_dir.w);
+    // The key light is a disc of uniform radiance (irradiance / solid angle);
+    // sampled both directly and by BSDF/phase rays that leave the volume
+    // towards it, combined by MIS. A point light (size 0) only directly.
+    float cos_light = cos(u.material.w);
+    bool area_light = u.material.w > 1e-4;
+    float light_pdf = area_light ? 1.0 / (2.0 * PI * (1.0 - cos_light)) : 0.0;
+    bool env_map = u.lighting.w == 2u;
+    mat3 to_index = mat3(u.world_to_index);
+    vec3 eye_idx = (u.world_to_index * vec4(u.eye.xyz, 1.0)).xyz;
+
+    vec3 sum = vec3(0.0);
+    float background = 0.0;
+    vec4 albedo_sum = vec4(0.0);  // rgb albedo, a luminance^2
+    vec4 normal_sum = vec4(0.0);  // rgb normal, a depth
+    for (uint i = 0u; i < samples; i++) {
+        vec3 dir = camera_ray(vec2(pixel) + vec2(rand(), rand()));
+        vec3 origin = eye_idx;
+        if (u.lens.x > 0.0) {
+            // Thin lens: rays from a random point of the lens disc through the
+            // pinhole ray's point on the focal plane.
+            vec3 eye = u.eye.xyz;
+            vec3 focal = eye + dir * (u.lens.y / dot(dir, normalize(u.forward.xyz)));
+            float r = u.lens.x * sqrt(rand());
+            float phi = 2.0 * PI * rand();
+            eye += r * (cos(phi) * normalize(u.right.xyz) + sin(phi) * normalize(u.up.xyz));
+            dir = normalize(focal - eye);
+            origin = (u.world_to_index * vec4(eye, 1.0)).xyz;
+        }
+        vec3 throughput = vec3(1.0);
+        vec3 radiance = vec3(0.0);
+        int hero = min(int(rand() * 3.0), 2);
+        // Probability ratios of the channels to the hero's, over the path so far;
+        // the hero's own is 1, so their mean is at least 1/3.
+        vec3 spectral = vec3(1.0);
+        float last_pdf = 0.0;  // solid-angle pdf of the last scattered direction
+        // `bounce` counts all scattering events; the bounce limit applies to
+        // surface events, volume events (random walks below surfaces, which need
+        // many steps to carry light back out) have their own.
+        for (uint bounce = 0u, surfaces = 0u, volumes = 0u;
+             surfaces <= max_bounces && volumes <= MAX_VOLUME_EVENTS; bounce++) {
+            vec3 idx;
+            Sample s;
+            int cap_plane;
+            float cut;
+            if (!free_flight(origin, dir, bounce == 0u, hero, spectral, idx, s, cap_plane, cut)) {
+                if (bounce == 0u) {
+                    background += 1.0;  // composited by tonemap.comp
+                    albedo_sum.rgb += vec3(1.0);
+                    normal_sum.a += 1e4;
+                } else {
+                    float weight = env_map ? mis(last_pdf, env_pdf(dir)) : 1.0;
+                    vec3 path_weight = throughput * spectral / dot(spectral, vec3(1.0 / 3.0));
+                    radiance += path_weight * environment(dir) * weight;
+                    if (area_light && dot(dir, u.light_dir.xyz) >= cos_light) {
+                        radiance += path_weight * light * light_pdf * mis(last_pdf, light_pdf);
+                    }
+                }
+                break;
+            }
+            vec3 path_weight = throughput * spectral / dot(spectral, vec3(1.0 / 3.0));
+            vec3 v = -dir;
+            vec3 n;
+            float surfaceness;
+            surface_frame(idx, s, v, cap_plane, cut, 1.5 * step_mm, n, surfaceness);
+            if (bounce == 0u) {
+                albedo_sum.rgb += s.albedo;
+                normal_sum += vec4(dot(n, v) < 0.0 ? -n : n, length(idx - eye_idx));
+            }
+
+            // Next-event estimation: the key light, and the light map.
+            vec3 light_dir = sample_light(light_frame);
+            vec3 light_t = transmittance(idx, light_dir);
+            float map_pdf = 0.0;
+            vec3 map_dir = vec3(0.0);
+            vec3 map_light = vec3(0.0);
+            if (env_map) {
+                map_dir = sample_env(map_pdf);
+                map_light = env_map_radiance(map_dir) / max(map_pdf, 1e-8);
+                if (map_pdf > 0.0) {
+                    map_light *= transmittance(idx, map_dir);
+                }
+            }
+
+            bool surface_event = rand() < surfaceness * (1.0 - s.subsurface) && dot(n, n) > 0.5;
+            if (surface_event) {
+                n = dot(n, v) < 0.0 ? -n : n;  // two-sided
+                vec3 diffuse;
+                vec3 specular = brdf_coated(n, v, light_dir, s, diffuse);
+                float light_weight = area_light ? mis(light_pdf, bsdf_pdf(n, v, light_dir, s)) : 1.0;
+                radiance += path_weight * (diffuse + specular) * max(dot(n, light_dir), 0.0) * light * light_t
+                    * light_weight;
+                if (map_pdf > 0.0 && dot(n, map_dir) > 0.0) {
+                    specular = brdf_coated(n, v, map_dir, s, diffuse);
+                    radiance += path_weight * (diffuse + specular) * dot(n, map_dir) * map_light
+                        * mis(map_pdf, bsdf_pdf(n, v, map_dir, s));
+                }
+
+                // Next direction: the coat's or the tissue's GGX lobe (half-vector
+                // sampling) or the cosine lobe, weighted by the combined pdf.
+                mat3 frame = basis(n);
+                vec3 l;
+                if (rand() < coat_share(s)) {
+                    l = sample_ggx(frame, v, COAT_ROUGHNESS * COAT_ROUGHNESS);
+                } else if (rand() < specular_share(s)) {
+                    l = sample_ggx(frame, v, max(s.roughness * s.roughness, 2e-3));
+                } else {
+                    float r = sqrt(rand());
+                    float phi = 2.0 * PI * rand();
+                    l = frame * vec3(r * cos(phi), r * sin(phi), sqrt(max(0.0, 1.0 - r * r)));
+                }
+                float nl = dot(n, l);
+                if (nl <= 0.0) {
+                    break;
+                }
+                float pdf = bsdf_pdf(n, v, l, s);
+                specular = brdf_coated(n, v, l, s, diffuse);
+                throughput *= (diffuse + specular) * nl / max(pdf, 1e-6);
+                last_pdf = pdf;
+                surfaces++;
+                // Leave the surface before tracing on.
+                origin = idx + to_index * (n * step_mm);
+                dir = l;
+            } else {
+                // Volume scattering: forward-peaked phase function, with the
+                // single-scattering albedo that makes the material's colour its
+                // multiple-scattering albedo.
+                vec3 albedo = single_scattering_albedo(s.albedo);
+                float light_phase = phase_hg(dot(dir, light_dir));
+                radiance += path_weight * albedo * light_phase * light * light_t
+                    * (area_light ? mis(light_pdf, light_phase) : 1.0);
+                if (map_pdf > 0.0) {
+                    float phase = phase_hg(dot(dir, map_dir));
+                    radiance += path_weight * albedo * phase * map_light * mis(map_pdf, phase);
+                }
+                throughput *= albedo;
+                volumes++;
+                origin = idx;
+                vec3 next = sample_hg(dir);
+                last_pdf = phase_hg(dot(dir, next));
+                dir = next;
+            }
+
+            // Russian roulette once paths carry little energy.
+            if (bounce >= 2u) {
+                vec3 w = throughput * spectral / dot(spectral, vec3(1.0 / 3.0));
+                float survive = clamp(max(w.r, max(w.g, w.b)), 0.05, 1.0);
+                if (rand() > survive) {
+                    break;
+                }
+                throughput /= survive;
+            }
+        }
+        // Clamp rare, very bright paths (fireflies); slightly biased, much less noisy.
+        float peak = max(radiance.r, max(radiance.g, radiance.b));
+        radiance = peak > 20.0 ? radiance * (20.0 / peak) : radiance;
+        sum += radiance;
+        float luminance = dot(radiance, vec3(0.2126, 0.7152, 0.0722));
+        albedo_sum.a += luminance * luminance;
+    }
+
+    ivec2 p = ivec2(pixel);
+    bool first = u.path.x == 0u;
+    vec4 accum = (first ? vec4(0.0) : imageLoad(accum_image, p)) + vec4(sum, background);
+    imageStore(accum_image, p, accum);
+    imageStore(guide_albedo_image, p, (first ? vec4(0.0) : imageLoad(guide_albedo_image, p)) + albedo_sum);
+    imageStore(guide_normal_image, p, (first ? vec4(0.0) : imageLoad(guide_normal_image, p)) + normal_sum);
+    imageStore(hdr_image, p, accum / float(u.path.x + samples));
+}

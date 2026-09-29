@@ -1,0 +1,138 @@
+#version 460
+#extension GL_GOOGLE_include_directive : require
+// Camera finishing before tone mapping: bloom (the glow real lenses spread
+// around bright light) and auto exposure. Passes, selected by pc.sweep.x:
+//   0  quarter-resolution copy of the HDR image (bloom A), with coverage
+//   1  auto exposure: mean log luminance of the covered pixels of A
+//   2  blur A along x into B      3  blur B along y into A
+//   4  half-resolution copy of A (bloom C)
+//   5  blur C along x into D      6  blur D along y into C
+// tonemap.comp blends A (narrow glow) and C (wide glow) into the image.
+
+#include "common.glsl"
+
+layout(local_size_x = 8, local_size_y = 8) in;
+
+layout(set = 0, binding = 28, rgba16f) uniform image2D bloom_a;
+layout(set = 0, binding = 29, rgba16f) uniform image2D bloom_b;
+layout(set = 0, binding = 30, rgba16f) uniform image2D bloom_c;
+layout(set = 0, binding = 31, rgba16f) uniform image2D bloom_d;
+layout(set = 0, binding = 34, r32f) uniform image2D exposure_image;
+
+layout(push_constant) uniform Push {
+    ivec4 target_dims;  // xy: size of the image written
+    ivec4 sweep;        // x: pass, y: 1 = reset exposure adaptation
+    ivec4 soft;
+} pc;
+
+// Scene luminance that auto exposure maps to the manual exposure's middle:
+// the mean log luminance of typical renders at exposure 0.
+const float EXPOSURE_KEY = 0.24;
+// Share of the way to the new exposure taken per frame.
+const float ADAPTATION = 0.15;
+
+float luminance(vec3 c) {
+    return dot(c, vec3(0.2126, 0.7152, 0.0722));
+}
+
+// Source of a blur pass (2: A, 3: B, 5: C, 6: D).
+vec4 blur_source(int pass, ivec2 q) {
+    return pass == 2 ? imageLoad(bloom_a, q)
+        : pass == 3 ? imageLoad(bloom_b, q)
+        : pass == 5 ? imageLoad(bloom_c, q)
+        : imageLoad(bloom_d, q);
+}
+
+// 9-tap Gaussian (sigma ~2 texels) along `axis`, over an image of `size`.
+vec4 blur(int pass, ivec2 p, ivec2 axis, ivec2 size) {
+    const float w[5] = float[](0.2270, 0.1945, 0.1216, 0.0540, 0.0162);
+    vec4 sum = blur_source(pass, p) * w[0];
+    for (int i = 1; i < 5; i++) {
+        sum += w[i] * (blur_source(pass, clamp(p + axis * i, ivec2(0), size - 1))
+                     + blur_source(pass, clamp(p - axis * i, ivec2(0), size - 1)));
+    }
+    return sum;
+}
+
+shared float log_sum[64];
+shared float weight_sum[64];
+
+void main() {
+    int pass = pc.sweep.x;
+    ivec2 p = ivec2(gl_GlobalInvocationID.xy);
+
+    if (pass == 1) {
+        // One workgroup averages the whole quarter-resolution image.
+        uint t = gl_LocalInvocationIndex;
+        ivec2 size = imageSize(bloom_a);
+        float s = 0.0;
+        float w = 0.0;
+        for (int i = int(t); i < size.x * size.y; i += 64) {
+            vec4 c = imageLoad(bloom_a, ivec2(i % size.x, i / size.x));
+            s += c.a * log(max(luminance(c.rgb), 1e-4));
+            w += c.a;
+        }
+        log_sum[t] = s;
+        weight_sum[t] = w;
+        barrier();
+        for (uint stride = 32u; stride > 0u; stride >>= 1) {
+            if (t < stride) {
+                log_sum[t] += log_sum[t + stride];
+                weight_sum[t] += weight_sum[t + stride];
+            }
+            barrier();
+        }
+        if (t == 0u) {
+            // Nothing drawn: keep the manual exposure.
+            float target = weight_sum[0] > 1.0
+                ? clamp(EXPOSURE_KEY / exp(log_sum[0] / weight_sum[0]), 0.25, 4.0)
+                : 1.0;
+            float previous = imageLoad(exposure_image, ivec2(0)).r;
+            // Adapt in log space, like an eye or a camera's metering.
+            float adapted = previous <= 0.0 || pc.sweep.y != 0
+                ? target
+                : exp(mix(log(previous), log(target), ADAPTATION));
+            imageStore(exposure_image, ivec2(0), vec4(adapted));
+        }
+        return;
+    }
+
+    if (any(greaterThanEqual(p, pc.target_dims.xy))) {
+        return;
+    }
+    if (pass == 0) {
+        // Average of 4x4 HDR pixels, each weighted by 1 / (1 + luminance)
+        // (Karis): single very bright pixels, e.g. path-tracing fireflies,
+        // would otherwise bloom into blotches. Alpha: covered (non-background)
+        // share, for metering.
+        ivec2 size = imageSize(hdr_image) - 1;
+        vec3 sum = vec3(0.0);
+        float weights = 0.0;
+        float coverage = 0.0;
+        for (int y = 0; y < 4; y++) {
+            for (int x = 0; x < 4; x++) {
+                vec4 h = imageLoad(hdr_image, min(p * 4 + ivec2(x, y), size));
+                float w = 1.0 / (1.0 + luminance(h.rgb));
+                sum += h.rgb * w;
+                weights += w;
+                coverage += 1.0 - h.a;
+            }
+        }
+        imageStore(bloom_a, p, vec4(sum / weights, coverage / 16.0));
+    } else if (pass == 2) {
+        imageStore(bloom_b, p, blur(pass, p, ivec2(1, 0), pc.target_dims.xy));
+    } else if (pass == 3) {
+        imageStore(bloom_a, p, blur(pass, p, ivec2(0, 1), pc.target_dims.xy));
+    } else if (pass == 4) {
+        ivec2 size = imageSize(bloom_a) - 1;
+        vec4 sum = vec4(0.0);
+        for (int i = 0; i < 4; i++) {
+            sum += imageLoad(bloom_a, min(p * 2 + ivec2(i & 1, i >> 1), size));
+        }
+        imageStore(bloom_c, p, sum * 0.25);
+    } else if (pass == 5) {
+        imageStore(bloom_d, p, blur(pass, p, ivec2(1, 0), pc.target_dims.xy));
+    } else if (pass == 6) {
+        imageStore(bloom_c, p, blur(pass, p, ivec2(0, 1), pc.target_dims.xy));
+    }
+}

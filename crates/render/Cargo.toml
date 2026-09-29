@@ -1,0 +1,24 @@
+[package]
+name = "render"
+edition.workspace = true
+version.workspace = true
+
+[dependencies]
+volio = { path = "../volio" }
+anyhow.workspace = true
+ash.workspace = true
+ash-window.workspace = true
+gpu-allocator.workspace = true
+raw-window-handle.workspace = true
+glam = { workspace = true, features = ["bytemuck"] }
+bytemuck.workspace = true
+rayon.workspace = true
+half = "2"
+tracing.workspace = true
+# Links the official OpenImageDenoise release in data/oidn (OIDN_DIR, see
+# .cargo/config.toml): the crate's own "bundled" download is broken in 2.5.1.
+oidn = { version = "2.5", optional = true }
+
+[features]
+default = ["oidn"]
+oidn = ["dep:oidn"]

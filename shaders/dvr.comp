@@ -1,0 +1,135 @@
+#version 460
+#extension GL_GOOGLE_include_directive : require
+// Real-time direct volume rendering: emission-absorption ray marching with
+// single scattering from a directional key light (precomputed shadow volume),
+// ambient light (precomputed occlusion volume) and a Cook-Torrance/GGX BRDF on
+// surfaces. Writes linear HDR radiance; tonemap.comp produces the display image.
+
+#include "common.glsl"
+#include "shading.glsl"
+
+layout(local_size_x = 8, local_size_y = 8) in;
+
+void main() {
+    uvec2 pixel = gl_GlobalInvocationID.xy;
+    if (any(greaterThanEqual(pixel, u.flags.zw))) {
+        return;
+    }
+
+    vec3 dir = camera_ray(vec2(pixel) + 0.5);
+    vec3 o_idx = (u.world_to_index * vec4(u.eye.xyz, 1.0)).xyz;
+    vec3 d_idx = mat3(u.world_to_index) * dir;  // index units per mm
+    vec2 t = intersect_volume(o_idx, d_idx);
+
+    float step_mm = u.dims.w;
+    bool preintegrate = u.lighting.z != 0u;
+    vec3 l = u.light_dir.xyz;
+    vec3 v = -dir;
+    vec3 light = vec3(u.light_dir.w);
+    vec3 radiance = vec3(0.0);
+    float transmittance = 1.0;
+    bool refined = false;
+    if (t.x < t.y) {
+        float tt = t.x + ign(vec2(pixel)) * step_mm;
+        float prev_density = density_view(o_idx + d_idx * (tt - step_mm));
+        for (; tt < t.y && transmittance > 0.01; tt += step_mm) {
+            vec3 idx = o_idx + d_idx * tt;
+            // Empty-space skipping: jump to the end of a brick nothing is drawn in.
+            // The brick bound covers a voxel of border, so the next sample (up to a
+            // step past the exit) cannot miss anything.
+            if (brick_majorant(idx) <= 0.0) {
+                tt += brick_exit(idx, d_idx);
+                prev_density = -1.0;
+                continue;
+            }
+            int cap_plane;
+            float cut = clip_depth(idx, cap_plane);
+            if (cut > 0.0) {
+                prev_density = -1.0;  // no segment across the cut face: point-sample next
+                continue;
+            }
+            float density = density_view(idx);
+            float front_density = prev_density;
+            bool segment = preintegrate && front_density >= 0.0;
+            Sample s = segment ? tf_segment(front_density, density) : tf_point(density);
+            prev_density = density;
+            s = apply_labels(s, idx);
+            if (s.extinction <= 0.0) {
+                continue;
+            }
+            float alpha = 1.0 - exp(-s.extinction * step_mm);
+            // An opaque segment is shaded where it becomes opaque, not at its end:
+            // otherwise normals and lighting come from up to one step inside the
+            // material, which shows as contour bands at larger steps.
+            // Only while the ray is still mostly transparent: behind the first surface
+            // the refinement is invisible but not free.
+            if (segment && alpha > 0.2 && transmittance > 0.5 && s.label == 0u
+                && abs(density - front_density) > 1e-4) {
+                idx -= d_idx * (step_mm * (1.0 - preint_half_depth(front_density, density)));
+            } else if (!refined && alpha > 0.2 && transmittance > 0.9) {
+                // The same for the first surface a ray meets in general (label
+                // boundaries, hybrid CT edges, point-sampled transfer functions):
+                // bisect between the previous sample and this one for where the
+                // opacity reaches half of this sample's. Shading one step inside
+                // the surface would show as contour ripples on smooth organs.
+                refined = true;
+                float inside = 0.0;
+                float outside = -step_mm;
+                float target = 0.5 * s.extinction;
+                for (int i = 0; i < 5; i++) {
+                    float mid = 0.5 * (inside + outside);
+                    vec3 at = idx + d_idx * mid;
+                    bool opaque = apply_labels(tf_point(density_view(at)), at).extinction >= target;
+                    inside = opaque ? mid : inside;
+                    outside = opaque ? outside : mid;
+                }
+                idx += d_idx * inside;
+            }
+
+            vec3 n;
+            float surfaceness;
+            float extinction_scale = surface_frame(idx, s, v, cap_plane, cut, 1.5 * step_mm, n, surfaceness);
+            if (s.ghost) {
+                alpha = 1.0 - exp(-s.extinction * extinction_scale * step_mm);
+            }
+
+            // The lighting volumes are coarse: a surface point would interpolate between
+            // cells inside the material (dark) and outside it (lit), and the cut through
+            // that grid shows up as contour bands. Look up just outside the surface
+            // instead, like a normal-offset bias for shadow maps.
+            mat3 to_index = mat3(u.world_to_index);
+            vec3 shadow_at = index_to_tex(idx + to_index * (n * (1.5 * u.light_cells.x * surfaceness)));
+            vec3 ao_at = index_to_tex(idx + to_index * (n * (u.light_cells.y * surfaceness)));
+            float shadow = u.lighting.x != 0u ? lighting_lookup(shadow_tex, shadow_at).a : 1.0;
+            // Subsurface light is read a little below the surface: what entered nearby
+            // and diffused through the tissue.
+            vec3 sss_at = index_to_tex(idx - to_index * (n * (u.subsurface.w * surfaceness)));
+            vec3 diffused = u.lighting.x != 0u ? lighting_lookup(shadow_tex, sss_at).rgb : vec3(1.0);
+            float ao = u.lighting.y != 0u ? lighting_lookup(ao_tex, ao_at).r : 1.0;
+
+            n = dot(n, v) < 0.0 ? -n : n;  // two-sided: shade the side facing the camera
+
+            float nl = max(dot(n, l), 0.0);
+            vec3 diffuse;
+            vec3 specular = brdf_coated(n, v, l, s, diffuse);
+            // Part of the diffuse light is scattered below the surface: lit by the
+            // diffused light instead of the hard shadow, and without the n.l falloff,
+            // so it wraps around edges and bleeds through thin structures.
+            vec3 surface = (specular + diffuse * (1.0 - s.subsurface)) * nl * shadow
+                + diffuse * s.subsurface * diffused;
+            // Homogeneous regions have no meaningful normal: isotropic scattering.
+            vec3 volume = s.albedo / (4.0 * PI) * mix(vec3(shadow), diffused, s.subsurface);
+            vec3 direct = mix(volume, surface, surfaceness) * light;
+            // Light map: what a diffuse surface facing `n` receives; homogeneous
+            // regions scatter the mean over all directions (1 x ambient).
+            vec3 ambient_light = u.lighting.w == 2u
+                ? mix(u.ambient.rgb, env_map_diffuse(n), surfaceness)
+                : u.ambient.rgb;
+            vec3 ambient = s.albedo * ambient_light * ao;
+
+            radiance += transmittance * alpha * (direct + ambient);
+            transmittance *= 1.0 - alpha;
+        }
+    }
+    imageStore(hdr_image, ivec2(pixel), vec4(radiance, transmittance));
+}

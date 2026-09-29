@@ -1,0 +1,154 @@
+#version 460
+#extension GL_GOOGLE_include_directive : require
+// Smoothed masks of the voxels drawn solid (r) and ghosted (g) in the current
+// label mode. Sampled trilinearly and thresholded, they give smooth label
+// boundaries instead of voxel staircases (after Tiede et al., "High quality
+// rendering of attributed volume data", 1998).
+//
+// Four passes over two images: binary masks into B, then a separable binomial
+// blur along x (B -> A), y (A -> B) and z (B -> A). A is what rendering samples.
+
+#include "common.glsl"
+
+layout(local_size_x = 4, local_size_y = 4, local_size_z = 4) in;
+
+layout(set = 0, binding = 15, rg16) uniform writeonly image3D mask_b_image;
+layout(set = 0, binding = 16) uniform sampler3D mask_b_tex;
+
+layout(set = 0, binding = 24) uniform usampler3D soft_tex;  // best, runner-up, margin x16 per model node
+
+layout(push_constant) uniform Push {
+    ivec4 target_dims;
+    ivec4 params;  // x: cut margin in voxels (tint mode), y: pass (0 binary, 1-3 blur x/y/z), z: blur radius
+    ivec4 soft;    // xyz: volume axis of each soft-grid axis, w: bit a = axis a reversed, 8 = present
+} pc;
+
+// Margin (logits) at which a node counts as certain.
+const float CERTAIN = 4.0;
+// How similar in CT a node must be to count: normalised density (~40 HU).
+const float SIGMA_CT = 40.0 / 4095.0;
+
+// Signed score of a node for "drawn": + inside, - outside, 0 on the boundary.
+float soft_score(bool best, bool second, float margin) {
+    if (best == second) {
+        return best ? CERTAIN : -CERTAIN;
+    }
+    return best ? min(margin, CERTAIN) : -min(margin, CERTAIN);
+}
+
+// Masks from the model's margins, upsampled to the CT grid guided by the CT
+// itself (joint bilateral upsampling, Kopf et al. 2007): nodes that look like
+// this voxel in the CT count more, so boundaries snap to tissue edges at CT
+// resolution; without an edge they follow the smoothly interpolated margin.
+vec2 soft_masks(ivec3 p, ivec3 dims) {
+    ivec3 axis = pc.soft.xyz;
+    ivec3 grid = textureSize(soft_tex, 0);
+    vec3 can = vec3(dims[axis.x], dims[axis.y], dims[axis.z]);
+    vec3 to_grid = (vec3(grid) - 1.0) / max(can - 1.0, vec3(1.0));
+    // This voxel in grid coordinates.
+    vec3 x;
+    for (int a = 0; a < 3; a++) {
+        float v = float(p[axis[a]]);
+        x[a] = ((pc.soft.w >> a) & 1) != 0 ? can[a] - 1.0 - v : v;
+    }
+    x *= to_grid;
+
+    uint mode = uint(u.labels.x);
+    float here = texelFetch(density_tex, p, 0).r;
+    ivec3 center = ivec3(round(x));
+    vec2 sum = vec2(0.0);
+    float weights = 0.0;
+    for (int dz = -1; dz <= 1; dz++) {
+        for (int dy = -1; dy <= 1; dy++) {
+            for (int dx = -1; dx <= 1; dx++) {
+                ivec3 node = clamp(center + ivec3(dx, dy, dz), ivec3(0), grid - 1);
+                vec3 d = vec3(node) - x;
+                float w_space = exp(-dot(d, d) / (2.0 * 0.6 * 0.6));
+                // The CT at the node, back in volume index coordinates.
+                vec3 c = vec3(node) / to_grid;
+                vec3 v;
+                for (int a = 0; a < 3; a++) {
+                    v[axis[a]] = ((pc.soft.w >> a) & 1) != 0 ? can[a] - 1.0 - c[a] : c[a];
+                }
+                float there = textureLod(density_tex, index_to_tex(v), 0.0).r;
+                float w_ct = exp(-(here - there) * (here - there) / (2.0 * SIGMA_CT * SIGMA_CT));
+                uvec4 t = texelFetch(soft_tex, node, 0);
+                float margin = float(t.b) / 16.0;
+                vec2 score = vec2(
+                    soft_score(label_solid(t.r, mode), label_solid(t.g, mode), margin),
+                    soft_score(label_ghosted(t.r), label_ghosted(t.g), margin));
+                float w = w_space * w_ct + 1e-6 * w_space;
+                sum += w * score;
+                weights += w;
+            }
+        }
+    }
+    vec2 s = sum / weights;
+    return clamp(0.5 + s / (2.0 * CERTAIN), 0.0, 1.0);
+}
+
+// Whether `label` is taken out of the solid region (hidden or ghosted).
+bool label_removed(uint label) {
+    return label != 0u && (!label_shown(label) || label_ghosted(label));
+}
+
+vec2 binary_masks(ivec3 p, ivec3 dims) {
+    uint mode = uint(u.labels.x);
+    uint label = texelFetch(label_tex, p, 0).r;
+    // Labels derived from the CT (skin, devices) are drawn by their own voxels.
+    vec2 m = (pc.soft.w & 8) != 0 && label < FIRST_CT_LABEL
+        ? soft_masks(p, dims)
+        : vec2(label_solid(label, mode), label_ghosted(label));
+    // Tint mode draws unlabelled tissue, and segmentations end slightly inside the
+    // real boundary (e.g. they miss the cortical rim of bone). Removing a label
+    // would leave that rim as a hollow shell, so unlabelled voxels within the
+    // margin of a removed label are cut too.
+    int margin = pc.params.x;
+    if (mode == 1u && margin > 0 && label == 0u) {
+        for (int a = -margin; a <= margin && m.x > 0.0; a++) {
+            for (int b = -margin; b <= margin && m.x > 0.0; b++) {
+                for (int c = -margin; c <= margin; c++) {
+                    uint l = texelFetch(label_tex, clamp(p + ivec3(a, b, c), ivec3(0), dims - 1), 0).r;
+                    if (label_removed(l)) {
+                        m.x = 0.0;
+                        break;
+                    }
+                }
+            }
+        }
+    }
+    return m;
+}
+
+void main() {
+    ivec3 p = ivec3(gl_GlobalInvocationID);
+    ivec3 dims = pc.target_dims.xyz;
+    if (any(greaterThanEqual(p, dims))) {
+        return;
+    }
+    int pass = pc.params.y;
+    if (pass == 0) {
+        imageStore(mask_b_image, p, vec4(binary_masks(p, dims), 0.0, 0.0));
+        return;
+    }
+
+    // Binomial weights C(2r, r + k) / 4^r: a close approximation of a Gaussian
+    // with sigma = sqrt(r / 2) voxels.
+    int r = pc.params.z;
+    ivec3 axis = ivec3(0);
+    axis[pass - 1] = 1;
+    vec2 sum = vec2(0.0);
+    float c = 1.0;
+    for (int j = 0; j <= 2 * r; j++) {
+        ivec3 q = clamp(p + axis * (j - r), ivec3(0), dims - 1);
+        vec2 v = pass == 2 ? texelFetch(mask_tex, q, 0).rg : texelFetch(mask_b_tex, q, 0).rg;
+        sum += c * v;
+        c = c * float(2 * r - j) / float(j + 1);
+    }
+    sum /= exp2(float(2 * r));
+    if (pass == 2) {
+        imageStore(mask_b_image, p, vec4(sum, 0.0, 0.0));
+    } else {
+        imageStore(mask_image, p, vec4(sum, 0.0, 0.0));
+    }
+}

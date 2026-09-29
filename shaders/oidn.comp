@@ -1,0 +1,51 @@
+#version 460
+#extension GL_GOOGLE_include_directive : require
+// Moves the path tracer's accumulated image to and from OIDN without leaving
+// the GPU: the buffers are Vulkan memory shared with OIDN (see
+// Renderer::denoise_oidn). pc.sweep.x selects the pass, pc.sweep.y is the
+// number of paths per pixel accumulated.
+//   0  pack: means of radiance, first-hit albedo and normal as packed RGB
+//   1  unpack: OIDN's result plus the background share into the HDR image
+
+#include "common.glsl"
+
+layout(local_size_x = 8, local_size_y = 8) in;
+
+layout(set = 0, binding = 17, rgba32f) uniform image2D accum_image;         // rgb radiance, a background
+layout(set = 0, binding = 18, rgba32f) uniform image2D guide_albedo_image;  // rgb albedo, a luminance^2
+layout(set = 0, binding = 19, rgba32f) uniform image2D guide_normal_image;  // rgb normal, a depth
+
+layout(set = 0, binding = 35, std430) buffer ColorBuffer { float color[]; };
+layout(set = 0, binding = 36, std430) buffer AlbedoBuffer { float albedo[]; };
+layout(set = 0, binding = 37, std430) buffer NormalBuffer { float normal[]; };
+layout(set = 0, binding = 38, std430) buffer OutputBuffer { float denoised[]; };
+
+layout(push_constant) uniform Push {
+    ivec4 target_dims;
+    ivec4 sweep;
+    ivec4 soft;
+} pc;
+
+void main() {
+    ivec2 p = ivec2(gl_GlobalInvocationID.xy);
+    if (any(greaterThanEqual(p, pc.target_dims.xy))) {
+        return;
+    }
+    uint i = 3u * uint(p.x + p.y * pc.target_dims.x);
+    float n = float(max(pc.sweep.y, 1));
+    if (pc.sweep.x == 0) {
+        vec3 c = imageLoad(accum_image, p).rgb / n;
+        vec3 a = clamp(imageLoad(guide_albedo_image, p).rgb / n, 0.0, 1.0);
+        vec3 nrm = imageLoad(guide_normal_image, p).rgb;
+        float len = length(nrm);
+        nrm = len > 1e-6 ? nrm / len : vec3(0.0);
+        for (uint k = 0u; k < 3u; k++) {
+            color[i + k] = c[k];
+            albedo[i + k] = a[k];
+            normal[i + k] = nrm[k];
+        }
+    } else {
+        float background = imageLoad(accum_image, p).a / n;
+        imageStore(hdr_image, p, vec4(denoised[i], denoised[i + 1u], denoised[i + 2u], background));
+    }
+}

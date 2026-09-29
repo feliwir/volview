@@ -1,0 +1,21 @@
+[package]
+name = "volview"
+edition.workspace = true
+version.workspace = true
+
+[dependencies]
+volio = { path = "../volio" }
+anyhow.workspace = true
+clap.workspace = true
+image.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+render = { path = "../render" }
+seg = { path = "../seg" }
+winit.workspace = true
+glam.workspace = true
+rayon.workspace = true
+egui-ash-renderer = { version = "0.13", features = ["gpu-allocator"] }
+egui = "0.36"
+egui-winit = "0.36"
+ash = { version = "0.38", default-features = false, features = ["std"] }

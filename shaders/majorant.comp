@@ -1,0 +1,71 @@
+#version 460
+#extension GL_GOOGLE_include_directive : require
+// Upper bound ("majorant") of the extinction inside each 8^3-voxel brick, for
+// empty-space skipping in the ray marcher and delta/ratio tracking in the path
+// tracer. The bound covers two voxels of border, since the cubic B-spline
+// filter (density_cubic) reaches two voxels beyond a point's own cell.
+
+#include "common.glsl"
+
+layout(local_size_x = 4, local_size_y = 4, local_size_z = 4) in;
+
+layout(set = 0, binding = 23, r32f) uniform writeonly image3D majorant_image;
+
+// Largest transfer-function extinction for densities in [lo, hi], from per-bucket
+// maxima of the LUT (conservative: whole buckets are included).
+float tf_max(float lo, float hi) {
+    int first = clamp(int(lo * 64.0), 0, 63);
+    int last = clamp(int(hi * 64.0), 0, 63);
+    float m = 0.0;
+    for (int b = first; b <= last; b++) {
+        m = max(m, u.tf_bucket_max[b / 4][b % 4]);
+    }
+    return m;
+}
+
+void main() {
+    ivec3 brick = ivec3(gl_GlobalInvocationID);
+    ivec3 grid = imageSize(majorant_image);
+    if (any(greaterThanEqual(brick, grid))) {
+        return;
+    }
+    ivec3 dims = ivec3(u.dims.xyz);
+    ivec3 lo = brick * BRICK_SIZE - 2;
+    ivec3 hi = min(brick * BRICK_SIZE + BRICK_SIZE + 1, dims - 1);
+    lo = max(lo, ivec3(0));
+
+    uint mode = uint(u.labels.x);
+    float d_min = 1.0;
+    float d_max = 0.0;
+    float mask_max = 0.0;
+    for (int z = lo.z; z <= hi.z; z++) {
+        for (int y = lo.y; y <= hi.y; y++) {
+            for (int x = lo.x; x <= hi.x; x++) {
+                ivec3 p = ivec3(x, y, z);
+                float d = texelFetch(density_tex, p, 0).r;
+                d_min = min(d_min, d);
+                d_max = max(d_max, d);
+                if (mode != 0u) {
+                    vec2 m = texelFetch(mask_tex, p, 0).rg;
+                    mask_max = max(mask_max, max(m.r, m.g));
+                }
+            }
+        }
+    }
+
+    float bound;
+    if (mode == 0u) {
+        bound = tf_max(d_min, d_max);
+    } else if (mask_max <= 0.0) {
+        // Nothing drawn: labels hide everything here (tint mode keeps unlabelled
+        // tissue, which is in the solid mask).
+        bound = 0.0;
+    } else if (mode == 1u) {
+        bound = tf_max(d_min, d_max);
+    } else {
+        // Isolate and hybrid use the label opacity (hybrid only scales it down);
+        // ghosted structures in tint mode would use the transfer function.
+        bound = u.labels.z;
+    }
+    imageStore(majorant_image, brick, vec4(bound));
+}

@@ -1,0 +1,37 @@
+#version 460
+#extension GL_GOOGLE_include_directive : require
+// Precomputes surface normals from the density with a 3x3x3 Sobel operator,
+// which smooths across the gradient direction and so suppresses CT noise.
+
+#include "common.glsl"
+
+layout(local_size_x = 4, local_size_y = 4, local_size_z = 4) in;
+
+float d(ivec3 p) {
+    return texelFetch(density_tex, clamp(p, ivec3(0), ivec3(u.dims.xyz) - 1), 0).r;
+}
+
+void main() {
+    ivec3 p = ivec3(gl_GlobalInvocationID);
+    if (any(greaterThanEqual(p, ivec3(u.dims.xyz)))) {
+        return;
+    }
+    vec3 g = vec3(0.0);
+    for (int a = -1; a <= 1; a++) {
+        for (int b = -1; b <= 1; b++) {
+            float w = float((2 - abs(a)) * (2 - abs(b)));  // (1 2 1) x (1 2 1)
+            g.x += w * (d(p + ivec3(1, a, b)) - d(p + ivec3(-1, a, b)));
+            g.y += w * (d(p + ivec3(a, 1, b)) - d(p + ivec3(a, -1, b)));
+            g.z += w * (d(p + ivec3(a, b, 1)) - d(p + ivec3(a, b, -1)));
+        }
+    }
+    g /= 32.0;  // kernel weights sum to 16; central difference spans 2 voxels
+    // d(index)/d(world) = world_to_index, so grad_world = transpose(A) * grad_index.
+    vec3 gw = transpose(mat3(u.world_to_index)) * g;
+    float len = length(gw);
+    // The normal points from dense to less dense tissue. Surfaceness blends
+    // between surface and volume shading; 0.0025/mm of normalised density
+    // (about 10 HU/mm) or more counts as a clear surface.
+    vec3 n = len > 1e-7 ? -gw / len : vec3(0.0);
+    imageStore(normal_image, p, vec4(n, clamp(len * 400.0, 0.0, 1.0)));
+}

@@ -1,0 +1,43 @@
+#version 460
+#extension GL_GOOGLE_include_directive : require
+// Ambient occlusion: mean transmittance over a sphere of directions within a
+// short radius, remapped so that a flat surface (half the sphere blocked) is
+// unoccluded.
+
+#include "common.glsl"
+
+layout(local_size_x = 4, local_size_y = 4, local_size_z = 4) in;
+
+layout(push_constant) uniform Push {
+    ivec4 target_dims;  // xyz: occlusion volume size
+    ivec4 unused;
+} pc;
+
+const int DIRECTIONS = 16;
+const int STEPS = 8;
+const float RADIUS_MM = 15.0;
+
+void main() {
+    ivec3 p = ivec3(gl_GlobalInvocationID);
+    if (any(greaterThanEqual(p, pc.target_dims.xyz))) {
+        return;
+    }
+    vec3 center = tex_to_index((vec3(p) + 0.5) / vec3(pc.target_dims.xyz));
+    mat3 to_index = mat3(u.world_to_index);
+    float dt = RADIUS_MM / float(STEPS);
+
+    float visible = 0.0;
+    for (int i = 0; i < DIRECTIONS; i++) {
+        // Fibonacci sphere.
+        float z = 1.0 - (float(i) + 0.5) * (2.0 / float(DIRECTIONS));
+        float r = sqrt(1.0 - z * z);
+        float phi = float(i) * 2.39996323;
+        vec3 d = to_index * vec3(r * cos(phi), r * sin(phi), z);
+        float depth = 0.0;
+        for (int j = 0; j < STEPS; j++) {
+            depth += sample_point(center + d * ((float(j) + 0.5) * dt)).extinction * dt;
+        }
+        visible += exp(-depth);
+    }
+    imageStore(ao_image, p, vec4(min(2.0 * visible / float(DIRECTIONS), 1.0)));
+}
