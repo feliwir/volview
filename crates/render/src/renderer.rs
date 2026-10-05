@@ -67,6 +67,7 @@ struct Uniforms {
     label_colors: [Vec4; 256],
     label_materials: [Vec4; 256],
     label_density: [Vec4; 256],
+    label_surface: [Vec4; 256],
 }
 
 /// Must match `Push` in shadow.comp and ao.comp.
@@ -129,6 +130,10 @@ pub struct LabelParams {
     /// median and interquartile range of the label's voxels. A negative IQR marks
     /// hollow (air-containing) structures, drawn by their segmentation alone.
     pub density: [[f32; 4]; 256],
+    /// Per label value: procedural surface texture, pattern (0 none, 1 mottled,
+    /// 2 lobular), colour variation (fraction of the albedo), relief height (mm)
+    /// and feature size (mm).
+    pub surface: [[f32; 4]; 256],
 }
 
 impl Default for LabelParams {
@@ -144,6 +149,7 @@ impl Default for LabelParams {
             cut_margin_mm: 2.0,
             smoothing: 1,
             density: [[0.0, 1e-3, 0.5, 1.0]; 256],
+            surface: [[0.0; 4]; 256],
         }
     }
 }
@@ -217,6 +223,8 @@ pub struct Lighting {
     pub scattering_distance: f32,
     /// Scales every material's subsurface amount (0 disables subsurface scattering).
     pub subsurface_strength: f32,
+    /// Scales the colour variation and relief of procedural surface textures (0 = off).
+    pub surface_detail: f32,
 }
 
 impl Default for Lighting {
@@ -244,6 +252,7 @@ impl Default for Lighting {
             subsurface: 0.3,
             scattering_distance: 10.0,
             subsurface_strength: 1.0,
+            surface_detail: 1.0,
         }
     }
 }
@@ -513,6 +522,14 @@ impl Renderer {
                 "volume {:?} exceeds the GPU's 3D texture limit of {}",
                 volume.dims,
                 limits.max_image_dimension3_d
+            );
+        }
+
+        let uniforms_size = std::mem::size_of::<Uniforms>() as u32;
+        if uniforms_size > limits.max_uniform_buffer_range {
+            bail!(
+                "the renderer needs a {uniforms_size}-byte uniform buffer; the GPU allows {}",
+                limits.max_uniform_buffer_range
             );
         }
 
@@ -1588,6 +1605,10 @@ impl Renderer {
                 label_materials: std::array::from_fn(|i| {
                     let [r, m, sss, coat] = labels.materials[i];
                     Vec4::new(r, m, coat, sss * light.subsurface_strength)
+                }),
+                label_surface: labels.surface.map(|[pattern, color, relief, size]| {
+                    let k = light.surface_detail;
+                    Vec4::new(pattern, color * k, relief * k, size)
                 }),
             },
         );

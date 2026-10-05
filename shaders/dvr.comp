@@ -89,6 +89,7 @@ void main() {
             vec3 n;
             float surfaceness;
             float extinction_scale = surface_frame(idx, s, v, cap_plane, cut, 1.5 * step_mm, n, surfaceness);
+            apply_surface_texture(idx, s);
             if (s.ghost) {
                 alpha = 1.0 - exp(-s.extinction * extinction_scale * step_mm);
             }
@@ -107,6 +108,7 @@ void main() {
             vec3 diffused = u.lighting.x != 0u ? lighting_lookup(shadow_tex, sss_at).rgb : vec3(1.0);
             float ao = u.lighting.y != 0u ? lighting_lookup(ao_tex, ao_at).r : 1.0;
 
+            n = bump_normal(idx, s, n);
             n = dot(n, v) < 0.0 ? -n : n;  // two-sided: shade the side facing the camera
 
             float nl = max(dot(n, l), 0.0);

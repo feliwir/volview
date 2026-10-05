@@ -243,7 +243,7 @@ float bsdf_pdf(vec3 n, vec3 v, vec3 l, Sample s) {
     float share = specular_share(s);
     float base = share * ggx_pdf(n, v, l, a) + (1.0 - share) * nl / PI;
     float coat = coat_share(s);
-    return coat * ggx_pdf(n, v, l, COAT_ROUGHNESS * COAT_ROUGHNESS) + (1.0 - coat) * base;
+    return coat * ggx_pdf(n, v, l, coat_roughness(s) * coat_roughness(s)) + (1.0 - coat) * base;
 }
 
 // Opacity along a ray as the renderer sees it: labels applied, clip planes
@@ -421,6 +421,12 @@ void main() {
             vec3 n;
             float surfaceness;
             surface_frame(idx, s, v, cap_plane, cut, 1.5 * step_mm, n, surfaceness);
+            apply_surface_texture(idx, s);
+            bool surface_event = rand() < surfaceness * (1.0 - s.subsurface) && dot(n, n) > 0.5;
+            // The relief only shades surfaces (and the denoiser's normal guide).
+            if (surface_event || bounce == 0u) {
+                n = bump_normal(idx, s, n);
+            }
             if (bounce == 0u) {
                 albedo_sum.rgb += s.albedo;
                 normal_sum += vec4(dot(n, v) < 0.0 ? -n : n, length(idx - eye_idx));
@@ -440,7 +446,6 @@ void main() {
                 }
             }
 
-            bool surface_event = rand() < surfaceness * (1.0 - s.subsurface) && dot(n, n) > 0.5;
             if (surface_event) {
                 n = dot(n, v) < 0.0 ? -n : n;  // two-sided
                 vec3 diffuse;
@@ -459,7 +464,7 @@ void main() {
                 mat3 frame = basis(n);
                 vec3 l;
                 if (rand() < coat_share(s)) {
-                    l = sample_ggx(frame, v, COAT_ROUGHNESS * COAT_ROUGHNESS);
+                    l = sample_ggx(frame, v, coat_roughness(s) * coat_roughness(s));
                 } else if (rand() < specular_share(s)) {
                     l = sample_ggx(frame, v, max(s.roughness * s.roughness, 2e-3));
                 } else {

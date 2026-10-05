@@ -73,6 +73,8 @@ pub struct ViewOptions {
     pub label_smoothing: u32,
     /// Scales all subsurface amounts (0 = off).
     pub subsurface: f32,
+    /// Scales the procedural surface textures (0 = off).
+    pub surface_detail: f32,
     /// Path trace with this many paths per pixel instead of ray marching.
     pub path_samples: Option<u32>,
     /// Denoise the path-traced image.
@@ -295,6 +297,7 @@ impl Settings {
             lighting: Lighting {
                 shadows: view.shadows,
                 subsurface_strength: view.subsurface,
+                surface_detail: view.surface_detail,
                 ambient_occlusion: view.ambient_occlusion,
                 environment: view.environment,
                 roughness: view.roughness,
@@ -1116,6 +1119,8 @@ fn lighting_controls(ui: &mut egui::Ui, l: &mut Lighting, has_env_map: bool) {
     .on_hover_text("How far light diffuses through tissue (all materials)");
     ui.add(egui::Slider::new(&mut l.subsurface_strength, 0.0..=1.0).text("Subsurface strength"))
         .on_hover_text("Scales every material's subsurface amount; 0 turns it off");
+    ui.add(egui::Slider::new(&mut l.surface_detail, 0.0..=2.0).text("Surface detail"))
+        .on_hover_text("Colour variation and relief of the organs' surfaces; 0 turns it off");
 }
 
 fn label_controls(ui: &mut egui::Ui, s: &mut Settings, labels: &mut LabelSet, voxel_ml: f64) {

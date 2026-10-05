@@ -26,6 +26,8 @@ pub struct LabelEntry {
     pub subsurface: f32,
     /// Strength of the glossy film of wet tissue (clear coat).
     pub coat: f32,
+    /// Procedural surface texture, see [`surface_texture`].
+    pub surface: [f32; 4],
     pub style: Style,
     pub group: Group,
     /// Hybrid mode: normalised-density ramp (start, end), median and interquartile
@@ -115,7 +117,8 @@ impl Group {
             Group::Skin => 0.5,
             Group::Context => 0.7,
             Group::Skeleton => 0.15,
-            Group::Lungs => 0.3,
+            // Mostly air: light does not soften inside it as in solid organs.
+            Group::Lungs => 0.15,
             Group::HeartVessels => 0.45,
             Group::Digestive | Group::Urogenital => 0.6,
             Group::Muscles => 0.5,
@@ -131,7 +134,7 @@ impl Group {
             // Sebum gives skin a faint sheen.
             Group::Skin => 0.2,
             Group::Context => 0.6,
-            Group::Lungs => 0.6,
+            Group::Lungs => 0.3,
             Group::HeartVessels | Group::Digestive | Group::Urogenital => 0.8,
             Group::Muscles => 0.4,
             Group::Other => 0.5,
@@ -286,6 +289,7 @@ impl LabelSet {
                     metalness: 0.0,
                     subsurface: 0.0,
                     coat: 0.0,
+                    surface: [0.0; 4],
                     // The skeleton and skin enclose most organs: ghost them so they show.
                     // Table, head holder and the like only get in the way.
                     style: if value == crate::skin::DEVICES {
@@ -344,6 +348,10 @@ impl LabelSet {
             (e.color, e.roughness, e.metalness) = (color, roughness, 0.0);
             e.subsurface = e.group.subsurface();
             e.coat = e.group.coat();
+            e.surface = match palette {
+                Palette::Anatomical => surface_texture(&e.name, e.group),
+                Palette::Distinct => [0.0; 4],
+            };
         }
     }
 
@@ -370,6 +378,7 @@ impl LabelSet {
             let v = e.value as usize;
             params.colors[v] = [r, g, b, if e.style == Style::Hidden { 0.0 } else { 1.0 }];
             params.materials[v] = [e.roughness, e.metalness, e.subsurface, e.coat];
+            params.surface[v] = e.surface;
             params.ghost[v] = e.style == Style::Ghost;
             params.density[v] = e.density;
         }
@@ -489,7 +498,8 @@ const ANATOMICAL: &[(&[&str], [u8; 3], f32)] = &[
     (&["urinary_bladder"], [0xd8, 0xb9, 0xa6], 0.25),
     (&["prostate"], [0xb7, 0x7f, 0x6e], 0.3),
     (&["thyroid"], [0x8a, 0x3b, 0x2e], 0.3),
-    (&["lung"], [0xd9, 0x9a, 0x9a], 0.5),
+    // Healthy adult lung is a greyish pink, not the salmon of solid organs.
+    (&["lung"], [0xc8, 0x9c, 0xa0], 0.5),
     // Chambers and myocardium are one label; epicardial fat is not segmented.
     (&["heart", "atrial_appendage"], [0x7a, 0x1e, 0x1e], 0.3),
     // Vessel labels cover the blood-filled lumen: bright arterial red, dark
@@ -513,6 +523,32 @@ fn anatomical_material(name: &str) -> ([f32; 3], f32) {
         .find(|(keys, _, _)| keys.iter().any(|k| name.contains(k)))
         .map_or(([0xb0, 0x70, 0x60], 0.35), |&(_, c, r)| (c, r));
     (srgb.map(|c| srgb_to_linear(c as f32 / 255.0)), roughness)
+}
+
+/// Procedural texture of a structure's surface in the anatomical palette:
+/// pattern (0 none, 1 mottled, 2 lobular), colour variation (fraction of the
+/// albedo), relief height (mm) and feature size (mm). Real organs are neither
+/// evenly coloured nor perfectly smooth; hand-picked for appearance.
+fn surface_texture(name: &str, group: Group) -> [f32; 4] {
+    let has = |keys: &[&str]| keys.iter().any(|k| name.contains(k));
+    if has(&["lung"]) {
+        // Secondary pulmonary lobules (1-2.5 cm) outlined by interlobular
+        // septa, which collect dark pigment (anthracosis) in adults.
+        [2.0, 0.12, 0.25, 15.0]
+    } else if has(&["pancreas", "thyroid", "adrenal"]) {
+        // Glands with small lobules.
+        [1.0, 0.12, 0.3, 3.0]
+    } else {
+        match group {
+            // Their surfaces and texture come from the CT.
+            Group::Skeleton | Group::Skin | Group::Context => [0.0; 4],
+            Group::Lungs => [1.0, 0.05, 0.1, 4.0],
+            Group::Muscles => [1.0, 0.08, 0.25, 3.0],
+            Group::HeartVessels => [1.0, 0.06, 0.1, 6.0],
+            Group::Digestive | Group::Urogenital => [1.0, 0.08, 0.15, 8.0],
+            Group::Other => [1.0, 0.06, 0.15, 6.0],
+        }
+    }
 }
 
 /// Category colours with per-label variation, so neighbours (e.g. consecutive

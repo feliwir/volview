@@ -124,6 +124,10 @@ struct Args {
     /// Strength of subsurface scattering, scaling every material (0 = off).
     #[arg(long, default_value_t = 1.0, value_name = "STRENGTH")]
     subsurface: f32,
+    /// Strength of the organs' procedural surface texture (colour variation and
+    /// relief; 0 = off).
+    #[arg(long, default_value_t = 1.0, value_name = "STRENGTH")]
+    surface_detail: f32,
     /// Path trace instead of ray marching; for --screenshot, render this many
     /// paths per pixel [screenshots default: 512].
     #[arg(long, value_name = "SAMPLES", conflicts_with = "realtime")]
@@ -356,6 +360,7 @@ fn main() -> Result<()> {
         cut_margin: args.cut_margin,
         label_smoothing: args.label_smoothing,
         subsurface: args.subsurface,
+        surface_detail: args.surface_detail.max(0.0),
         // Screenshots are path traced unless asked otherwise.
         path_samples: args
             .path_trace

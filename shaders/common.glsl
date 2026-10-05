@@ -27,6 +27,7 @@ layout(set = 0, binding = 0, std140) uniform Uniforms {
     vec4 label_colors[256];     // per label: rgb albedo, a: 0 hidden, 1 shown, 2 ghosted
     vec4 label_materials[256];  // per label: x roughness, y metalness, z clear coat (wetness), w subsurface amount
     vec4 label_density[256];    // per label (hybrid): opacity ramp start/end, median, IQR (normalised density; IQR < 0: hollow)
+    vec4 label_surface[256];    // per label: surface texture pattern (0 none, 1 mottled, 2 lobular), colour variation, relief (mm), feature size (mm)
 } u;
 
 layout(set = 0, binding = 1) uniform sampler3D density_tex;  // HU normalised to [0, 1]
