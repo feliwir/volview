@@ -1099,7 +1099,7 @@ impl Renderer {
             bail!("OIDN not open");
         };
         if self.oidn_shared.is_empty() {
-            if !oidn.imports_fd() {
+            if !oidn.imports_external_memory() {
                 bail!("the OIDN device cannot import Vulkan memory");
             }
             let bytes = w as u64 * h as u64 * 12;
@@ -2276,12 +2276,18 @@ struct SharedBuffer {
 #[cfg(feature = "oidn")]
 impl SharedBuffer {
     /// A storage buffer of `size` bytes in its own exportable allocation,
-    /// imported into `oidn` through a file descriptor.
+    /// imported into `oidn` through a file descriptor (a Win32 handle on Windows).
     fn new(ctx: &Context, oidn: &crate::oidn::Oidn, size: u64) -> Result<Self> {
-        let Some(fd_fn) = &ctx.external_memory_fd else {
-            bail!("VK_KHR_external_memory_fd is not supported");
+        let Some(export_fn) = &ctx.external_memory else {
+            bail!(
+                "{} is not supported",
+                crate::context::external_memory::NAME.to_string_lossy()
+            );
         };
+        #[cfg(unix)]
         let handle = vk::ExternalMemoryHandleTypeFlags::OPAQUE_FD;
+        #[cfg(windows)]
+        let handle = vk::ExternalMemoryHandleTypeFlags::OPAQUE_WIN32;
         let device = &ctx.device;
         unsafe {
             let buffer = device.create_buffer(
@@ -2327,16 +2333,27 @@ impl SharedBuffer {
             device
                 .bind_buffer_memory(buffer, memory, 0)
                 .map_err(|e| cleanup(e.into()))?;
-            let fd = fd_fn
-                .get_memory_fd(
-                    &vk::MemoryGetFdInfoKHR::default()
+            #[cfg(unix)]
+            let exported = export_fn.get_memory_fd(
+                &vk::MemoryGetFdInfoKHR::default()
+                    .memory(memory)
+                    .handle_type(handle),
+            );
+            #[cfg(windows)]
+            let exported = export_fn
+                .get_memory_win32_handle(
+                    &vk::MemoryGetWin32HandleInfoKHR::default()
                         .memory(memory)
                         .handle_type(handle),
                 )
-                .map_err(|e| cleanup(e.into()))?;
+                .map(|h| {
+                    use std::os::windows::io::{FromRawHandle, OwnedHandle};
+                    OwnedHandle::from_raw_handle(h as _)
+                });
+            let exported = exported.map_err(|e| cleanup(e.into()))?;
             // OIDN checks the buffer holds exactly width x height x 3 floats;
             // the allocation may be larger.
-            let oidn = oidn.import(fd, size as usize).map_err(cleanup)?;
+            let oidn = oidn.import(exported, size as usize).map_err(cleanup)?;
             Ok(Self {
                 buffer,
                 memory,

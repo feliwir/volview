@@ -26,31 +26,47 @@ pub fn models_available(dir: &Path) -> bool {
 }
 
 /// Makes the CUDA, cuDNN and TensorRT libraries under `$VOLVIEW_CUDA_DIR` (default
-/// `data/cuda13`) findable by re-executing with `LD_LIBRARY_PATH` extended. The
-/// dynamic loader only reads that variable at startup, so it cannot be set later.
+/// `data/cuda13`) findable by re-executing with `LD_LIBRARY_PATH` (`PATH` on
+/// Windows) extended. The dynamic loader only reads that variable at startup, so
+/// it cannot be set later.
 pub fn ensure_cuda_library_path() {
     const MARK: &str = "VOLVIEW_LIBRARY_PATH_SET";
+    // Shared libraries live in lib/ on Unix; Windows keeps DLLs in bin/. The
+    // OIDN DLLs are copied next to the executable on Windows (see build.rs).
+    #[cfg(unix)]
+    let (var, lib_dirs, oidn_dir) = (
+        "LD_LIBRARY_PATH",
+        ["nvidia/cu13/lib", "nvidia/cudnn/lib", "tensorrt_libs"],
+        Some("data/oidn/lib"),
+    );
+    #[cfg(windows)]
+    let (var, lib_dirs, oidn_dir) = (
+        "PATH",
+        ["nvidia/cu13/bin", "nvidia/cudnn/bin", "tensorrt_libs"],
+        None::<&str>,
+    );
     if std::env::var_os(MARK).is_some() {
         return;
     }
     let root = std::env::var_os("VOLVIEW_CUDA_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|| workspace_root().join("data/cuda13"));
-    let mut dirs: Vec<PathBuf> = ["nvidia/cu13/lib", "nvidia/cudnn/lib", "tensorrt_libs"]
+    let mut dirs: Vec<PathBuf> = lib_dirs
         .iter()
         .map(|d| root.join(d))
         .filter(|d| d.is_dir())
         .collect();
     // OpenImageDenoise for the path tracer (see .cargo/config.toml).
-    let oidn = workspace_root().join("data/oidn/lib");
-    if oidn.is_dir() {
+    if let Some(oidn) = oidn_dir.map(|d| workspace_root().join(d))
+        && oidn.is_dir()
+    {
         dirs.push(oidn);
     }
     if dirs.is_empty() {
         return;
     }
     let mut paths = dirs;
-    if let Some(existing) = std::env::var_os("LD_LIBRARY_PATH") {
+    if let Some(existing) = std::env::var_os(var) {
         paths.extend(std::env::split_paths(&existing));
     }
     let Ok(joined) = std::env::join_paths(paths) else {
@@ -59,13 +75,24 @@ pub fn ensure_cuda_library_path() {
     let Ok(exe) = std::env::current_exe() else {
         return;
     };
-    use std::os::unix::process::CommandExt;
-    let err = std::process::Command::new(exe)
+    let mut command = std::process::Command::new(exe);
+    command
         .args(std::env::args_os().skip(1))
-        .env("LD_LIBRARY_PATH", joined)
-        .env(MARK, "1")
-        .exec();
-    tracing::warn!("could not re-execute with CUDA libraries on LD_LIBRARY_PATH: {err}");
+        .env(var, joined)
+        .env(MARK, "1");
+    #[cfg(unix)]
+    let err = {
+        use std::os::unix::process::CommandExt;
+        command.exec()
+    };
+    // Windows cannot replace the running process: run the child and exit with
+    // its status.
+    #[cfg(windows)]
+    let err = match command.status() {
+        Ok(status) => std::process::exit(status.code().unwrap_or(1)),
+        Err(err) => err,
+    };
+    tracing::warn!("could not re-execute with CUDA libraries on {var}: {err}");
 }
 
 /// Cached labels (NIfTI) and soft labels for a series.
