@@ -5,7 +5,7 @@ Vulkan ray marcher or path tracer (denoised with Intel Open Image Denoise) and
 optionally labels the anatomy with TotalSegmentator models run through ONNX
 Runtime.
 
-```
+```sh
 cargo run --release -- <DICOM_DIR>
 cargo run --release -- --help
 ```
@@ -81,7 +81,7 @@ Series that render well (all CC BY; credit TCIA and the collection when
 publishing images):
 
 | Collection | Content | Slices | SeriesInstanceUID |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | LIDC-IDRI | Chest, 3 mm | 100 | `1.3.6.1.4.1.14519.5.2.1.6279.6001.309707676674808510671394142910` |
 | FDG-PET-CT-Lesions | Shoulders to thighs, 2.5 mm | 391 | `1.3.6.1.4.1.14519.5.2.1.34775519577537201970528940353322258449` |
 | C4KC-KiTS | Contrast abdomen, 1 mm (try `--preset angio`) | 417 | `1.3.6.1.4.1.14519.5.2.1.6919.4624.237361109707836265327019544590` |
