@@ -5,6 +5,8 @@ Vulkan ray marcher or path tracer (denoised with Intel Open Image Denoise) and
 optionally labels the anatomy with TotalSegmentator models run through ONNX
 Runtime.
 
+![Sample](screenshots/lidc_ui.png)
+
 ```sh
 cargo run --release -- <DICOM_DIR>
 cargo run --release -- --help
