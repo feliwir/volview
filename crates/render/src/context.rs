@@ -7,6 +7,13 @@ use ash::{ext, khr, vk};
 use gpu_allocator::vulkan::{Allocator, AllocatorCreateDesc};
 use raw_window_handle::RawDisplayHandle;
 
+/// The platform's extension for exporting memory to other APIs: POSIX file
+/// descriptors on Unix, NT handles on Windows.
+#[cfg(unix)]
+pub use khr::external_memory_fd as external_memory;
+#[cfg(windows)]
+pub use khr::external_memory_win32 as external_memory;
+
 const VALIDATION_LAYER: &CStr = c"VK_LAYER_KHRONOS_validation";
 
 /// Vulkan instance, device and allocator shared by all rendering code.
@@ -20,9 +27,10 @@ pub struct Context {
     pub device: ash::Device,
     pub queue_family: u32,
     pub queue: vk::Queue,
-    /// Memory can be exported as POSIX file descriptors (VK_KHR_external_memory_fd),
-    /// e.g. to share images with OIDN on the same GPU without copies.
-    pub external_memory_fd: Option<khr::external_memory_fd::Device>,
+    /// Memory can be exported as POSIX file descriptors (VK_KHR_external_memory_fd)
+    /// or Win32 handles (VK_KHR_external_memory_win32), e.g. to share images
+    /// with OIDN on the same GPU without copies.
+    pub external_memory: Option<external_memory::Device>,
     /// The GPU's UUID, to open other APIs (OIDN, CUDA) on the same device.
     pub device_uuid: [u8; 16],
     /// Shared with other Vulkan users (e.g. the UI renderer); every clone must be
@@ -114,11 +122,11 @@ impl Context {
             vec![]
         };
         let available = unsafe { instance.enumerate_device_extension_properties(physical_device)? };
-        let has_external_fd = available.iter().any(|e| {
-            e.extension_name_as_c_str() == Ok(khr::external_memory_fd::NAME)
+        let has_external_memory = available.iter().any(|e| {
+            e.extension_name_as_c_str() == Ok(external_memory::NAME)
         });
-        if has_external_fd {
-            device_extensions.push(khr::external_memory_fd::NAME.as_ptr());
+        if has_external_memory {
+            device_extensions.push(external_memory::NAME.as_ptr());
         }
         let mut id_props = vk::PhysicalDeviceIDProperties::default();
         unsafe {
@@ -149,8 +157,8 @@ impl Context {
         }
         .context("creating Vulkan device")?;
         let queue = unsafe { device.get_device_queue(queue_family, 0) };
-        let external_memory_fd =
-            has_external_fd.then(|| khr::external_memory_fd::Device::new(&instance, &device));
+        let external_memory =
+            has_external_memory.then(|| external_memory::Device::new(&instance, &device));
 
         let allocator = Allocator::new(&AllocatorCreateDesc {
             instance: instance.clone(),
@@ -180,7 +188,7 @@ impl Context {
             device,
             queue_family,
             queue,
-            external_memory_fd,
+            external_memory,
             device_uuid,
             allocator: ManuallyDrop::new(Arc::new(Mutex::new(allocator))),
             command_pool,

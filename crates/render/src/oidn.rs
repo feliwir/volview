@@ -40,12 +40,15 @@ impl Oidn {
         })
     }
 
-    /// Whether memory exported as POSIX file descriptors (e.g. by Vulkan) can
-    /// be imported, for denoising without copies through the host.
-    pub fn imports_fd(&self) -> bool {
-        self.device
-            .external_memory_types()
-            .contains(oidn::ExternalMemoryTypeFlags::OPAQUE_FD)
+    /// Whether memory exported by Vulkan (as POSIX file descriptors, or NT
+    /// handles on Windows) can be imported, for denoising without copies
+    /// through the host.
+    pub fn imports_external_memory(&self) -> bool {
+        #[cfg(unix)]
+        let memory_type = oidn::ExternalMemoryTypeFlags::OPAQUE_FD;
+        #[cfg(windows)]
+        let memory_type = oidn::ExternalMemoryTypeFlags::OPAQUE_WIN32;
+        self.device.external_memory_types().contains(memory_type)
     }
 
     /// Imports `byte_size` bytes of a dedicated allocation exported as `fd`
@@ -54,11 +57,36 @@ impl Oidn {
     /// # Safety
     /// `fd` must be an opaque-fd export of a dedicated allocation of at least
     /// `byte_size` bytes on the same physical GPU.
+    #[cfg(unix)]
     pub unsafe fn import(&self, fd: std::os::fd::RawFd, byte_size: usize) -> Result<oidn::Buffer> {
         unsafe {
             self.device.create_shared_buffer_from_raw_fd(
                 oidn::ExternalMemoryTypeFlags::OPAQUE_FD | oidn::ExternalMemoryTypeFlags::DEDICATED,
                 fd,
+                byte_size,
+            )
+        }
+        .map_err(|e| anyhow!("importing shared memory into OIDN: {e:?}"))
+    }
+
+    /// Imports `byte_size` bytes of a dedicated allocation exported as
+    /// `handle`, which is closed afterwards (OIDN keeps its own reference).
+    ///
+    /// # Safety
+    /// `handle` must be an opaque-Win32 export of a dedicated allocation of at
+    /// least `byte_size` bytes on the same physical GPU.
+    #[cfg(windows)]
+    pub unsafe fn import(
+        &self,
+        handle: std::os::windows::io::OwnedHandle,
+        byte_size: usize,
+    ) -> Result<oidn::Buffer> {
+        use std::os::windows::io::AsRawHandle;
+        unsafe {
+            self.device.create_shared_buffer_from_raw_handle(
+                oidn::ExternalMemoryTypeFlags::OPAQUE_WIN32 | oidn::ExternalMemoryTypeFlags::DEDICATED,
+                handle.as_raw_handle(),
+                None,
                 byte_size,
             )
         }
