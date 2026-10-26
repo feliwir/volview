@@ -31,18 +31,19 @@ pub fn models_available(dir: &Path) -> bool {
 /// it cannot be set later.
 pub fn ensure_cuda_library_path() {
     const MARK: &str = "VOLVIEW_LIBRARY_PATH_SET";
-    // Shared libraries live in lib/ on Unix; Windows keeps DLLs in bin/.
+    // Shared libraries live in lib/ on Unix; Windows keeps DLLs in bin/. The
+    // OIDN DLLs are copied next to the executable on Windows (see build.rs).
     #[cfg(unix)]
     let (var, lib_dirs, oidn_dir) = (
         "LD_LIBRARY_PATH",
         ["nvidia/cu13/lib", "nvidia/cudnn/lib", "tensorrt_libs"],
-        "data/oidn/lib",
+        Some("data/oidn/lib"),
     );
     #[cfg(windows)]
     let (var, lib_dirs, oidn_dir) = (
         "PATH",
         ["nvidia/cu13/bin", "nvidia/cudnn/bin", "tensorrt_libs"],
-        "data/oidn/bin",
+        None::<&str>,
     );
     if std::env::var_os(MARK).is_some() {
         return;
@@ -56,8 +57,9 @@ pub fn ensure_cuda_library_path() {
         .filter(|d| d.is_dir())
         .collect();
     // OpenImageDenoise for the path tracer (see .cargo/config.toml).
-    let oidn = workspace_root().join(oidn_dir);
-    if oidn.is_dir() {
+    if let Some(oidn) = oidn_dir.map(|d| workspace_root().join(d))
+        && oidn.is_dir()
+    {
         dirs.push(oidn);
     }
     if dirs.is_empty() {
