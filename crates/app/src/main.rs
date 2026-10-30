@@ -1,5 +1,6 @@
 mod context;
 mod labels;
+mod scene;
 mod segmentation;
 mod skin;
 mod slices;
@@ -17,8 +18,14 @@ use volio::LoadOptions;
 #[derive(Parser, Debug)]
 #[command(version)]
 struct Args {
-    /// Folder containing a DICOM series (searched recursively).
-    dicom_dir: PathBuf,
+    /// Folder containing a DICOM series (searched recursively) [default: the --scene's].
+    #[arg(required_unless_present = "scene")]
+    dicom_dir: Option<PathBuf>,
+    /// Open a scene saved in the viewer: its dataset (unless DICOM_DIR is given),
+    /// settings, camera and label looks, which replace the view options below.
+    /// With --screenshot, renders it as seen in the viewer.
+    #[arg(long, value_name = "JSON")]
+    scene: Option<PathBuf>,
     /// SeriesInstanceUID to load (default: largest CT series).
     #[arg(long)]
     series: Option<String>,
@@ -34,9 +41,13 @@ struct Args {
     /// Render one frame headless to this PNG and exit.
     #[arg(long, value_name = "PNG")]
     screenshot: Option<PathBuf>,
-    /// Output size for --screenshot, or initial window size.
-    #[arg(long, num_args = 2, value_names = ["W", "H"], default_values_t = [1280, 960])]
-    size: Vec<u32>,
+    /// Output size for --screenshot, or initial window size [default: 1280 960,
+    /// or for --screenshot the --scene's image size].
+    #[arg(long, num_args = 2, value_names = ["W", "H"])]
+    size: Option<Vec<u32>>,
+    /// Start the window fullscreen, showing only the render (F11 toggles).
+    #[arg(long)]
+    fullscreen: bool,
     /// Transfer-function preset (bone, angio, soft tissue).
     #[arg(long, default_value = "bone")]
     preset: String,
@@ -246,12 +257,31 @@ fn main() -> Result<()> {
         )
         .init();
     let args = Args::parse();
+    let scene = args.scene.as_deref().map(scene::Scene::load).transpose()?;
+    // The scene's dataset, unless a folder is given.
+    let saved_dataset = scene
+        .as_ref()
+        .filter(|_| args.dicom_dir.is_none())
+        .map(|s| &s.dataset);
+    let dicom_dir = match (&args.dicom_dir, saved_dataset) {
+        (Some(dir), _) => dir.clone(),
+        (None, Some(d)) => d.dicom_dir.clone(),
+        (None, None) => unreachable!("clap requires DICOM_DIR or --scene"),
+    };
+    let series = args
+        .series
+        .clone()
+        .or_else(|| saved_dataset.and_then(|d| d.series.clone()));
+    let labels_path = args
+        .labels
+        .clone()
+        .or_else(|| saved_dataset.and_then(|d| d.labels.clone()));
     if !args.no_segment {
         segmentation::ensure_cuda_library_path();
     }
 
     if args.list_series {
-        for s in volio::list_series(&args.dicom_dir)? {
+        for s in volio::list_series(&dicom_dir)? {
             println!(
                 "{}  {:>4} slices  {:<3} {}",
                 s.uid, s.slices, s.modality, s.description
@@ -261,22 +291,20 @@ fn main() -> Result<()> {
     }
 
     let presets = TransferFunction::presets();
-    let preset = presets
-        .iter()
-        .position(|p| p.name.eq_ignore_ascii_case(&args.preset))
-        .with_context(|| {
-            let names: Vec<_> = presets.iter().map(|p| p.name).collect();
-            format!("unknown preset {:?}; available: {names:?}", args.preset)
-        })?;
+    let preset = match &scene {
+        Some(scene) => scene.settings.preset(),
+        None => presets
+            .iter()
+            .position(|p| p.name.eq_ignore_ascii_case(&args.preset))
+            .with_context(|| {
+                let names: Vec<_> = presets.iter().map(|p| p.name).collect();
+                format!("unknown preset {:?}; available: {names:?}", args.preset)
+            })?,
+    };
 
     let t = std::time::Instant::now();
-    let volume = volio::load_series(
-        &args.dicom_dir,
-        &LoadOptions {
-            series_uid: args.series.clone(),
-        },
-    )
-    .with_context(|| format!("loading {}", args.dicom_dir.display()))?;
+    let volume = volio::load_series(&dicom_dir, &LoadOptions { series_uid: series })
+        .with_context(|| format!("loading {}", dicom_dir.display()))?;
     let (lo, hi) = volume.hu_range();
     tracing::info!(
         dims = ?volume.dims,
@@ -302,7 +330,7 @@ fn main() -> Result<()> {
     // background for the viewer, so the window opens right away).
     let mut labels = None;
     let mut segment = false;
-    if let Some(path) = &args.labels {
+    if let Some(path) = &labels_path {
         let (data, names) = seg::read_labels(path, &volume)
             .with_context(|| format!("loading labels {}", path.display()))?;
         labels = Some(labels::LabelSet::new(data, &names, &volume));
@@ -323,16 +351,51 @@ fn main() -> Result<()> {
         return slices::dump_slices(&volume, out, args.window[0], args.window[1]);
     }
 
+    let size = match (&args.size, &scene) {
+        (Some(size), _) => (size[0], size[1]),
+        (
+            None,
+            Some(scene::Scene {
+                image_size: Some([w, h]),
+                ..
+            }),
+        ) if args.screenshot.is_some() => (*w, *h),
+        _ => (1280, 960),
+    };
+    let dataset = scene::Dataset {
+        dicom_dir: std::fs::canonicalize(&dicom_dir).unwrap_or(dicom_dir),
+        series: Some(volume.series_uid.clone()),
+        labels: labels_path.map(|p| std::fs::canonicalize(&p).unwrap_or(p)),
+    };
+    // Screenshots are path traced unless asked otherwise: with as many paths
+    // as the scene's image, if it was path traced.
+    let screenshot_paths = || {
+        scene
+            .as_ref()
+            .and_then(|s| s.settings.path_samples())
+            .unwrap_or(DEFAULT_SCREENSHOT_PATHS)
+    };
+    let path_samples = args
+        .path_trace
+        .or((args.screenshot.is_some() && !args.realtime).then(screenshot_paths));
     let view = viewer::ViewOptions {
-        size: (args.size[0], args.size[1]),
+        size,
+        dataset,
+        scene_path: args.scene.clone().unwrap_or_else(|| "scene.json".into()),
+        realtime: args.realtime,
+        fullscreen: args.fullscreen,
         preset,
         yaw_pitch_deg: (args.view[0], args.view[1]),
         zoom: args.zoom,
         tint: args.tint.clamp(0.0, 1.0),
-        env_map: args.env_map.clone().or_else(|| {
-            let default = PathBuf::from("data/hdri/studio_small_09_2k.hdr");
-            default.exists().then_some(default)
-        }),
+        env_map: args
+            .env_map
+            .clone()
+            .or_else(|| scene.as_ref().and_then(|s| s.env_map.clone()))
+            .or_else(|| {
+                let default = PathBuf::from("data/hdri/studio_small_09_2k.hdr");
+                default.exists().then_some(default)
+            }),
         smooth_sampling: !args.linear_sampling,
         finish: viewer::Finish {
             auto_exposure: !args.no_auto_exposure,
@@ -361,10 +424,7 @@ fn main() -> Result<()> {
         label_smoothing: args.label_smoothing,
         subsurface: args.subsurface,
         surface_detail: args.surface_detail.max(0.0),
-        // Screenshots are path traced unless asked otherwise.
-        path_samples: args
-            .path_trace
-            .or((args.screenshot.is_some() && !args.realtime).then_some(DEFAULT_SCREENSHOT_PATHS)),
+        path_samples,
         palette: match args.palette {
             PaletteArg::Anatomical => labels::Palette::Anatomical,
             PaletteArg::Distinct => labels::Palette::Distinct,
@@ -397,6 +457,7 @@ fn main() -> Result<()> {
         },
         shadows: !args.no_shadows,
         ambient_occlusion: !args.no_ao,
+        scene,
     };
     if let Some(labels) = labels.as_mut() {
         view.style_labels(labels);

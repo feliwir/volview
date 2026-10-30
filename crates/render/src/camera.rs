@@ -1,11 +1,12 @@
 use glam::Vec3;
+use serde::{Deserialize, Serialize};
 
 /// Orbit camera in patient space (LPS, mm).
 ///
 /// `yaw = 0, pitch = 0` is an anterior-posterior view: the camera sits anterior
 /// of the patient (-y), looks along +y with superior (+z) up, so the patient's
 /// left (+x) appears on the right of the screen.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct OrbitCamera {
     pub target: Vec3,
     pub distance: f32,

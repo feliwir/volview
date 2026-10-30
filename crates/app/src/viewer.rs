@@ -1,23 +1,25 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use anyhow::{Context as _, Result};
+use anyhow::{Context as _, Result, bail};
 use ash::vk;
 use egui_ash_renderer::{DynamicRendering, Options, RenderMode};
 use render::{
     AnatomicalPlane, Clipping, Context, Denoiser, Environment, FrameParams, LabelMode, Lighting,
     OrbitCamera, PathTracing, Presenter, Renderer, ToneMapper, TransferFunction,
 };
+use serde::{Deserialize, Serialize};
 use volio::Volume;
 use winit::application::ApplicationHandler;
 use winit::dpi::LogicalSize;
 use winit::event::{StartCause, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::raw_window_handle::HasDisplayHandle;
-use winit::window::{Window, WindowId};
+use winit::window::{Fullscreen, Window, WindowId};
 
 use crate::labels::{Group, LabelSet, Palette, Style};
+use crate::scene::{self, Dataset, Scene};
 use crate::segmentation::Job;
 
 type UiRenderer = egui_ash_renderer::Renderer<egui_ash_renderer::allocator::GpuAllocator>;
@@ -25,6 +27,16 @@ type UiRenderer = egui_ash_renderer::Renderer<egui_ash_renderer::allocator::GpuA
 #[derive(Debug, Clone)]
 pub struct ViewOptions {
     pub size: (u32, u32),
+    /// What is shown, recorded in saved scenes.
+    pub dataset: Dataset,
+    /// Saved scene to start from; replaces the settings below.
+    pub scene: Option<Scene>,
+    /// Where the viewer saves and loads scenes.
+    pub scene_path: PathBuf,
+    /// Ray march even if the scene was path traced.
+    pub realtime: bool,
+    /// Start fullscreen with the control panel hidden.
+    pub fullscreen: bool,
     pub preset: usize,
     pub yaw_pitch_deg: (f32, f32),
     pub environment: Environment,
@@ -142,6 +154,9 @@ impl ViewOptions {
         for &(group, style) in &self.group_styles {
             labels.set_group_style(group, style);
         }
+        if let Some(scene) = &self.scene {
+            scene::apply_label_looks(labels, &scene.labels);
+        }
     }
 }
 
@@ -211,7 +226,7 @@ pub fn screenshot(
     let params = settings.frame_params(&renderer, labels);
     let (w, h) = view.size;
     let t = std::time::Instant::now();
-    let frames = view.path_samples.map_or(1, |n| {
+    let frames = settings.path_samples().map_or(1, |n| {
         n.div_ceil(settings.path_tracing.samples_per_frame.max(1))
     });
     let pixels = render::render_to_rgba(&ctx, &mut renderer, &params, w, h, frames)?;
@@ -251,7 +266,8 @@ pub fn run(
 }
 
 /// User-adjustable render settings shown in the debug panel.
-struct Settings {
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Settings {
     camera: OrbitCamera,
     preset: usize,
     /// Ray step as a fraction of the finest voxel spacing.
@@ -259,10 +275,12 @@ struct Settings {
     /// Volume render resolution relative to the viewport's pixels.
     resolution_scale: f32,
     /// Re-render every frame (for timing) instead of only on change.
+    #[serde(skip)]
     continuous: bool,
     label_mode: LabelMode,
     tint: f32,
     extinction: f32,
+    #[serde(skip)]
     label_filter: String,
     palette: Palette,
     lighting: Lighting,
@@ -282,7 +300,24 @@ struct Settings {
 }
 
 impl Settings {
+    /// The saved scene's settings if there is one, else those of the options.
     fn new(renderer: &Renderer, view: &ViewOptions) -> Self {
+        let mut s = match &view.scene {
+            Some(scene) => scene.settings.clone(),
+            None => Self::from_options(renderer, view),
+        };
+        s.preset = s.preset.min(TransferFunction::presets().len() - 1);
+        if let Some(n) = view.path_samples {
+            s.path_trace = true;
+            s.max_samples = n;
+        }
+        if view.realtime {
+            s.path_trace = false;
+        }
+        s
+    }
+
+    fn from_options(renderer: &Renderer, view: &ViewOptions) -> Self {
         Self {
             camera: initial_camera(renderer, view),
             preset: view.preset,
@@ -325,6 +360,15 @@ impl Settings {
             },
             max_samples: view.path_samples.unwrap_or(1024),
         }
+    }
+
+    pub fn preset(&self) -> usize {
+        self.preset
+    }
+
+    /// Paths per pixel of a finished image, if path traced.
+    pub fn path_samples(&self) -> Option<u32> {
+        self.path_trace.then_some(self.max_samples)
     }
 
     fn frame_params(&self, renderer: &Renderer, labels: Option<&LabelSet>) -> FrameParams {
@@ -489,6 +533,16 @@ struct Viewer {
     /// Parameters of the image currently in the render target.
     rendered: Option<FrameParams>,
     quit: bool,
+    /// Borderless fullscreen with only the render visible (F11).
+    fullscreen: bool,
+    /// Size in pixels of the viewport the volume is drawn in.
+    image_size: (u32, u32),
+    /// Scene file path as typed in the panel.
+    scene_path: String,
+    /// Save or load clicked in the panel, handled in `redraw`.
+    scene_request: Option<SceneRequest>,
+    /// Outcome of the last save or load: a message, or an error.
+    scene_status: Option<Result<String, String>>,
     /// Paths per pixel of the current path-traced image.
     samples: u32,
     /// Frames presented since the volume was last (re)rendered.
@@ -503,7 +557,8 @@ impl App {
             event_loop.create_window(
                 Window::default_attributes()
                     .with_title("volview")
-                    .with_inner_size(LogicalSize::new(self.view.size.0, self.view.size.1)),
+                    .with_inner_size(LogicalSize::new(self.view.size.0, self.view.size.1))
+                    .with_fullscreen(self.view.fullscreen.then_some(Fullscreen::Borderless(None))),
             )?,
         );
         let ctx = Context::new(Some(event_loop.display_handle()?.as_raw()))?;
@@ -566,6 +621,11 @@ impl App {
             target: (0, 0),
             rendered: None,
             quit: false,
+            fullscreen: self.view.fullscreen,
+            image_size: self.view.size,
+            scene_path: self.view.scene_path.display().to_string(),
+            scene_request: None,
+            scene_status: None,
             settled_frames: 0,
             samples: 0,
             bench: std::env::var("VOLVIEW_BENCH")
@@ -647,6 +707,7 @@ fn redraw(gpu: &mut Gpu, viewer: &mut Viewer, labels: &mut LabelState) -> Result
     }
     let raw_input = gpu.egui_winit.take_egui_input(&gpu.window);
     let mut preset_changed = false;
+    let was_fullscreen = viewer.fullscreen;
     let egui_ctx = gpu.egui_ctx.clone();
     let mut output = egui_ctx.run_ui(raw_input, |ui| {
         preset_changed = panel(ui, viewer, labels, compute_ms);
@@ -668,6 +729,26 @@ fn redraw(gpu: &mut Gpu, viewer: &mut Viewer, labels: &mut LabelState) -> Result
     }
     gpu.egui_winit
         .handle_platform_output(&gpu.window, output.platform_output);
+    if let Some(request) = viewer.scene_request.take() {
+        let path = PathBuf::from(viewer.scene_path.trim());
+        let result = match request {
+            SceneRequest::Save => save_scene(viewer, labels, &path).map(|()| "saved"),
+            SceneRequest::Load => load_scene(gpu, viewer, labels, &path).map(|()| "loaded"),
+        };
+        if let Err(e) = &result {
+            tracing::error!("{e:#}");
+        }
+        viewer.scene_status = Some(
+            result
+                .map(|done| format!("{done} {}", path.display()))
+                .map_err(|e| format!("{e:#}")),
+        );
+        gpu.window.request_redraw();
+    }
+    if viewer.fullscreen != was_fullscreen {
+        gpu.window
+            .set_fullscreen(viewer.fullscreen.then_some(Fullscreen::Borderless(None)));
+    }
 
     let ctx = &gpu.ctx;
     if preset_changed {
@@ -784,6 +865,75 @@ fn redraw(gpu: &mut Gpu, viewer: &mut Viewer, labels: &mut LabelState) -> Result
     Ok(())
 }
 
+#[derive(Clone, Copy)]
+enum SceneRequest {
+    Save,
+    Load,
+}
+
+fn save_scene(viewer: &Viewer, labels: &LabelState, path: &Path) -> Result<()> {
+    // Until segmentation finishes, keep the looks of the scene we started from.
+    let looks = match &labels.set {
+        Some(set) => scene::label_looks(set),
+        None => viewer
+            .view
+            .scene
+            .as_ref()
+            .map(|s| s.labels.clone())
+            .unwrap_or_default(),
+    };
+    let scene = Scene {
+        dataset: viewer.view.dataset.clone(),
+        env_map: viewer.view.env_map.clone(),
+        image_size: Some([viewer.image_size.0, viewer.image_size.1]),
+        settings: viewer.settings.clone(),
+        labels: looks,
+    };
+    scene.save(path)?;
+    tracing::info!("saved scene {}", path.display());
+    Ok(())
+}
+
+/// Applies a scene of the same dataset to the running viewer.
+fn load_scene(
+    gpu: &mut Gpu,
+    viewer: &mut Viewer,
+    labels: &mut LabelState,
+    path: &Path,
+) -> Result<()> {
+    let scene = Scene::load(path)?;
+    if scene.dataset != viewer.view.dataset {
+        bail!(
+            "{} shows another dataset ({}); open it with --scene",
+            path.display(),
+            scene.dataset.dicom_dir.display()
+        );
+    }
+    if scene.env_map != viewer.view.env_map {
+        let map = scene.env_map.as_deref().map(load_env_map).transpose()?;
+        gpu.renderer.set_environment_map(&gpu.ctx, map.as_ref())?;
+        viewer.view.env_map = scene.env_map.clone();
+    }
+    let old = &viewer.settings;
+    let mut settings = Settings {
+        label_filter: old.label_filter.clone(),
+        continuous: old.continuous,
+        ..scene.settings.clone()
+    };
+    settings.preset = settings.preset.min(TransferFunction::presets().len() - 1);
+    gpu.renderer
+        .set_transfer_function(&gpu.ctx, &TransferFunction::presets()[settings.preset])?;
+    viewer.settings = settings;
+    if let Some(set) = labels.set.as_mut() {
+        scene::apply_label_looks(set, &scene.labels);
+    }
+    // Labels still being segmented get the scene's looks when they arrive.
+    viewer.view.scene = Some(scene);
+    viewer.rendered = None;
+    tracing::info!("loaded scene {}", path.display());
+    Ok(())
+}
+
 /// Debug controls. Returns whether the transfer-function preset changed.
 fn panel(
     ui: &mut egui::Ui,
@@ -801,7 +951,17 @@ fn panel(
     if !ui.ctx().egui_wants_keyboard_input() {
         ui.input(|i| {
             if i.key_pressed(egui::Key::Escape) {
-                viewer.quit = true;
+                if viewer.fullscreen {
+                    viewer.fullscreen = false;
+                } else {
+                    viewer.quit = true;
+                }
+            }
+            if i.modifiers.command && i.key_pressed(egui::Key::S) {
+                viewer.scene_request = Some(SceneRequest::Save);
+            }
+            if i.key_pressed(egui::Key::F11) || i.key_pressed(egui::Key::F) {
+                viewer.fullscreen = !viewer.fullscreen;
             }
             if i.key_pressed(egui::Key::R) {
                 s.camera = viewer.home;
@@ -821,12 +981,24 @@ fn panel(
         });
     }
 
+    if viewer.fullscreen {
+        return preset_changed;
+    }
     egui::Panel::left("controls")
         .resizable(true)
         .default_size(300.0)
         .show(ui, |ui| {
             egui::ScrollArea::vertical().show(ui, |ui| {
-                ui.heading("volview");
+                ui.horizontal(|ui| {
+                    ui.heading("volview");
+                    if ui
+                        .button("⛶ Fullscreen")
+                        .on_hover_text("Show only the render (F11 or F; Esc leaves)")
+                        .clicked()
+                    {
+                        viewer.fullscreen = true;
+                    }
+                });
                 let info = &viewer.info;
                 egui::Grid::new("info").num_columns(2).show(ui, |ui| {
                     ui.label("GPU");
@@ -946,6 +1118,38 @@ fn panel(
                 egui::CollapsingHeader::new("Clipping")
                     .default_open(true)
                     .show(ui, |ui| clipping_controls(ui, &mut s.clipping, bounds));
+
+                egui::CollapsingHeader::new("Scene")
+                    .default_open(true)
+                    .show(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            ui.label("File");
+                            ui.text_edit_singleline(&mut viewer.scene_path);
+                        });
+                        ui.horizontal(|ui| {
+                            if ui
+                                .button("Save")
+                                .on_hover_text("Dataset, settings, camera and label looks (Ctrl+S)")
+                                .clicked()
+                            {
+                                viewer.scene_request = Some(SceneRequest::Save);
+                            }
+                            if ui.button("Load").clicked() {
+                                viewer.scene_request = Some(SceneRequest::Load);
+                            }
+                        });
+                        match &viewer.scene_status {
+                            Some(Ok(msg)) => {
+                                ui.label(msg);
+                            }
+                            Some(Err(err)) => {
+                                ui.colored_label(ui.visuals().error_fg_color, err);
+                            }
+                            None => {}
+                        }
+                    })
+                    .header_response
+                    .on_hover_text("Render a saved scene with: volview --scene FILE --screenshot OUT.png");
 
                 egui::CollapsingHeader::new("Camera")
                     .default_open(true)
@@ -1268,6 +1472,10 @@ fn viewport(ui: &mut egui::Ui, viewer: &mut Viewer, texture: egui::TextureId) {
         let response = ui.allocate_rect(rect, egui::Sense::click_and_drag());
         let ppp = ui.ctx().pixels_per_point();
         let scale = viewer.settings.resolution_scale;
+        viewer.image_size = (
+            (rect.width() * ppp).round().max(1.0) as u32,
+            (rect.height() * ppp).round().max(1.0) as u32,
+        );
         viewer.target = (
             (rect.width() * ppp * scale).round().max(1.0) as u32,
             (rect.height() * ppp * scale).round().max(1.0) as u32,

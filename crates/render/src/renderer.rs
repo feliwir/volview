@@ -3,6 +3,7 @@ use ash::vk;
 use glam::{Mat3, Mat4, UVec3, UVec4, Vec3, Vec4};
 use gpu_allocator::MemoryLocation;
 use rayon::prelude::*;
+use serde::{Deserialize, Serialize};
 use volio::Volume;
 
 use crate::environment::{DIFFUSE_WIDTH, EnvironmentMap};
@@ -92,7 +93,7 @@ pub struct SoftLabelGrid<'a> {
 }
 
 /// How the label volume affects rendering.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum LabelMode {
     Off,
     /// Transfer-function opacity; visible labels tint the albedo, hidden labels are cut away.
@@ -154,7 +155,7 @@ impl Default for LabelParams {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ToneMapper {
     /// Clamp only.
     None,
@@ -163,7 +164,7 @@ pub enum ToneMapper {
 }
 
 /// What surrounds the volume.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Environment {
     /// Evenly lit dome, brighter above, over a dark grey background.
     Dome = 0,
@@ -176,7 +177,8 @@ pub enum Environment {
 }
 
 /// Lighting, material defaults and display transform.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct Lighting {
     /// Key light direction relative to the camera, radians: azimuth to the right
     /// of the view axis and elevation above it.
@@ -292,7 +294,8 @@ pub struct FrameParams {
 }
 
 /// Settings of the progressive path tracer.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct PathTracing {
     /// Scattering events per path before it is cut off.
     pub bounces: u32,
@@ -307,7 +310,7 @@ pub struct PathTracing {
     pub focus: Option<Vec3>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Denoiser {
     Off,
     /// Edge-avoiding à-trous filter on the GPU (denoise.comp).
@@ -333,7 +336,7 @@ impl Default for PathTracing {
 }
 
 /// The anatomical planes, as normals in patient (LPS) space.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum AnatomicalPlane {
     /// Normal left-right (x).
     Sagittal,
@@ -352,7 +355,7 @@ impl AnatomicalPlane {
 }
 
 /// A cut along an anatomical plane: everything on one side is removed.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct ClipPlane {
     pub enabled: bool,
     pub plane: AnatomicalPlane,
@@ -364,7 +367,8 @@ pub struct ClipPlane {
 }
 
 /// Anatomical cutaways.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct Clipping {
     /// One per anatomical plane, in [`AnatomicalPlane::ALL`] order.
     pub planes: [ClipPlane; 3],

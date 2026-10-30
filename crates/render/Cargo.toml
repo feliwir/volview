@@ -10,7 +10,8 @@ ash.workspace = true
 ash-window.workspace = true
 gpu-allocator.workspace = true
 raw-window-handle.workspace = true
-glam = { workspace = true, features = ["bytemuck"] }
+glam = { workspace = true, features = ["bytemuck", "serde"] }
+serde.workspace = true
 bytemuck.workspace = true
 rayon.workspace = true
 half = "2"

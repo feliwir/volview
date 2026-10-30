@@ -5,6 +5,7 @@ use std::collections::BTreeMap;
 use rayon::prelude::*;
 use render::transfer::{HU_MAX, HU_MIN};
 use render::{LabelMode, LabelParams};
+use serde::{Deserialize, Serialize};
 
 /// Depth of the skin shell below the body surface.
 const SKIN_THICKNESS_MM: f32 = 3.0;
@@ -36,7 +37,7 @@ pub struct LabelEntry {
 }
 
 /// How a label is drawn.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Style {
     Shown,
     /// Translucent context: silhouettes stay, faces fade, so structures behind show.
@@ -210,7 +211,7 @@ impl Group {
 }
 
 /// How default label materials are chosen.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Palette {
     /// Approximate in-situ tissue appearance.
     Anatomical,
