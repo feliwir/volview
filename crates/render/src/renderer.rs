@@ -64,12 +64,32 @@ struct Uniforms {
     env: Vec4,
     lens: Vec4,
     finish: Vec4,
+    tissue: Vec4,
     tf_bucket_max: [Vec4; 16],
     label_colors: [Vec4; 256],
     label_materials: [Vec4; 256],
     label_density: [Vec4; 256],
     label_surface: [Vec4; 256],
+    label_optics: [Vec4; 256],
 }
+
+/// Largest extinction (1/mm) of solid labelled tissue with measured optics in
+/// the path tracer: the reduced scattering coefficient scaled by 1 / (1 - g)
+/// (similarity relation, see `tissue_sigma` in pt.comp), at most `limit`.
+/// Bounds delta tracking.
+fn tissue_majorant(labels: &LabelParams, anisotropy: f32, limit: f32) -> f32 {
+    let g = anisotropy.clamp(0.0, 0.95);
+    let largest = (0..256)
+        .filter(|&i| labels.colors[i][3] > 0.5 && !labels.ghost[i] && labels.optics[i][3] > 0.0)
+        .map(|i| labels.optics[i][..3].iter().fold(0.0f32, |m, &x| m.max(x)))
+        .fold(0.0f32, f32::max);
+    (largest / (1.0 - g)).min(limit)
+}
+
+/// Mean free paths of measured tissue shorter than this many voxels (along the
+/// coarsest axis) are lengthened to it: below the CT's resolution, paths trace
+/// the interpolated label boundary and its slice terraces show as contour rings.
+const TISSUE_MIN_FREE_PATH_VOXELS: f32 = 2.0;
 
 /// Must match `Push` in shadow.comp and ao.comp.
 #[repr(C)]
@@ -135,6 +155,11 @@ pub struct LabelParams {
     /// 2 lobular), colour variation (fraction of the albedo), relief height (mm)
     /// and feature size (mm).
     pub surface: [[f32; 4]; 256],
+    /// Per label value: measured reduced scattering coefficient μs′ (1/mm) at
+    /// the red, green and blue channels' wavelengths, and w = 1 if measured.
+    /// The path tracer uses it for solid labelled tissue instead of
+    /// [`LabelParams::extinction`], which stays the ray marcher's opacity.
+    pub optics: [[f32; 4]; 256],
 }
 
 impl Default for LabelParams {
@@ -151,6 +176,7 @@ impl Default for LabelParams {
             smoothing: 1,
             density: [[0.0, 1e-3, 0.5, 1.0]; 256],
             surface: [[0.0; 4]; 256],
+            optics: [[0.0; 4]; 256],
         }
     }
 }
@@ -196,10 +222,18 @@ pub struct Lighting {
     /// brightest region lies on the key light's side.
     pub env_rotation: f32,
     /// Henyey-Greenstein anisotropy of volume scattering in the path tracer:
-    /// 0 isotropic, towards 1 forward scattering as in real tissue.
+    /// 0 isotropic, towards 1 forward scattering as in real tissue (measured in
+    /// skin 0.73-0.84, tissue generally about 0.9; Jensen et al. 2001 use 0.85).
+    /// Measured tissue keeps its reduced scattering under any g (similarity
+    /// relation), so its diffusion looks the same. Isotropic is the default: at
+    /// g = 0.85 the mean free path (~0.03 mm) is far below the CT voxel size,
+    /// paths trace the interpolated slices and their terraces show as ripples,
+    /// and rendering takes about four times as long.
     pub anisotropy: f32,
     /// How much redder light travels further than blue through tissue that
-    /// scatters below its surface, in the path tracer (0 = grey, 1 = like skin).
+    /// scatters below its surface, in the path tracer: 0 = grey (every channel
+    /// scatters like green), 1 = the measured wavelength dependence of tissue
+    /// scattering (see `Group::optics` in the app).
     pub chromatic: f32,
     pub shadows: bool,
     pub ambient_occlusion: bool,
@@ -220,8 +254,10 @@ pub struct Lighting {
     pub metalness: f32,
     /// Share of diffuse light scattered below the surface of unlabelled tissue.
     pub subsurface: f32,
-    /// How far light diffuses through tissue before being absorbed, roughly the
-    /// red mean free path at the default label opacity (mm).
+    /// Ray marcher: how far red light diffuses through tissue before being
+    /// absorbed, at the default label opacity (mm). Measured in skin as the
+    /// diffusion length 1 / sqrt(3 σa σt′): 3.7 and 4.8 mm (Jensen et al., "A
+    /// practical model for subsurface light transport", 2001, skin 1 and 2).
     pub scattering_distance: f32,
     /// Scales every material's subsurface amount (0 disables subsurface scattering).
     pub subsurface_strength: f32,
@@ -239,7 +275,7 @@ impl Default for Lighting {
             environment: Environment::Studio,
             light_size: 12f32.to_radians(),
             env_rotation: 0.0,
-            anisotropy: 0.6,
+            anisotropy: 0.0,
             chromatic: 1.0,
             shadows: true,
             ambient_occlusion: true,
@@ -252,7 +288,7 @@ impl Default for Lighting {
             roughness: 0.5,
             metalness: 0.0,
             subsurface: 0.3,
-            scattering_distance: 10.0,
+            scattering_distance: 4.0,
             subsurface_strength: 1.0,
             surface_detail: 1.0,
         }
@@ -1614,6 +1650,11 @@ impl Renderer {
                     let k = light.surface_detail;
                     Vec4::new(pattern, color * k, relief * k, size)
                 }),
+                label_optics: labels.optics.map(Vec4::from_array),
+                tissue: {
+                    let limit = 1.0 / (TISSUE_MIN_FREE_PATH_VOXELS * self.max_spacing);
+                    Vec4::new(tissue_majorant(labels, light.anisotropy, limit), limit, 0.0, 0.0)
+                },
             },
         );
 

@@ -122,10 +122,12 @@ vec3 single_scattering_albedo(vec3 a) {
     return 1.0 - s * s;
 }
 
-// Relative extinction per colour channel (rgb) of tissue that scatters below
-// its surface, after the mean free paths of skin (Jensen et al. 2001): red
-// travels about three times as far as blue.
-const vec3 TISSUE_CHROMA = vec3(0.35, 0.65, 1.0);
+// Relative extinction per colour channel (rgb) of unlabelled tissue that
+// scatters below its surface: the wavelength dependence of measured soft-tissue
+// scattering, μs′ ∝ λ^-1.286 at 650, 550 and 450 nm (Jacques, "Optical
+// properties of biological tissues: a review", 2013). Red scatters least and
+// travels furthest. Labelled tissue uses its own measured optics (tissue_sigma).
+const vec3 TISSUE_CHROMA = vec3(0.62, 0.77, 1.0);
 
 vec3 chroma(Sample s) {
     // Ghosted context shells are illustrative: a thin shell would scatter
@@ -134,6 +136,30 @@ vec3 chroma(Sample s) {
         return vec3(1.0);
     }
     return mix(vec3(1.0), TISSUE_CHROMA, clamp(2.0 * s.subsurface, 0.0, 1.0) * u.env.w);
+}
+
+// Extinction (1/mm, rgb) along a path of sample `s`, whose scalar extinction
+// (transfer function or label opacity, possibly faded for ghosts) is `extinction`.
+vec3 path_sigma(Sample s, float extinction) {
+    return measured(s) ? tissue_sigma(s) : extinction * chroma(s);
+}
+
+// Single-scattering albedo of a volume event. For measured tissue the colour
+// gives the reduced albedo, and the similarity relation keeps its absorption
+// per unit length: 1 - albedo shrinks by (1 - g) as the extinction grows by 1 / (1 - g).
+vec3 event_albedo(Sample s) {
+    vec3 reduced = single_scattering_albedo(s.albedo);
+    return measured(s) ? 1.0 - (1.0 - reduced) * (1.0 - clamp(u.env.z, 0.0, 0.95)) : reduced;
+}
+
+// Delta-tracking bound at `p`: the brick's bound, which for labels is the ray
+// marcher's label opacity, raised to cover measured tissue.
+float flight_majorant(vec3 p) {
+    float m = brick_majorant(p);
+    if (m > 0.0 && u.labels.x >= 2.0) {
+        m = max(m, u.tissue.x);
+    }
+    return min(m, max(MAX_EXTINCTION, max(u.labels.z, u.tissue.x)));
 }
 
 // Henyey-Greenstein phase function for the angle between the propagation
@@ -280,7 +306,7 @@ bool free_flight(
     float tt = t.x;
     for (int i = 0; i < 4096 && tt < t.y; i++) {
         vec3 p = origin + d_idx * tt;
-        float majorant = min(brick_majorant(p), max(MAX_EXTINCTION, u.labels.z));
+        float majorant = flight_majorant(p);
         float exit = tt + brick_exit(p, d_idx) + 1e-3;
         if (majorant <= 0.0) {
             tt = exit;
@@ -297,7 +323,7 @@ bool free_flight(
         if (extinction <= 0.0) {
             continue;  // certainly a null collision, for every channel
         }
-        vec3 sigma = extinction * chroma(s);
+        vec3 sigma = path_sigma(s, extinction);
         if (rand() * majorant < sigma[hero]) {
             spectral *= sigma / sigma[hero];
             return true;
@@ -326,7 +352,7 @@ vec3 transmittance(vec3 origin, vec3 dir) {
             result *= 0.1 / peak;
         }
         vec3 p = origin + d_idx * tt;
-        float majorant = min(brick_majorant(p), max(MAX_EXTINCTION, u.labels.z));
+        float majorant = flight_majorant(p);
         float exit = tt + brick_exit(p, d_idx) + 1e-3;
         if (majorant <= 0.0) {
             tt = exit;
@@ -339,7 +365,7 @@ vec3 transmittance(vec3 origin, vec3 dir) {
         }
         tt = next;
         Sample m = sample_point(origin + d_idx * tt);
-        result *= max(1.0 - m.extinction * chroma(m) / majorant, 0.0);
+        result *= max(1.0 - path_sigma(m, m.extinction) / majorant, 0.0);
     }
     return result;
 }
@@ -354,6 +380,9 @@ void main() {
 
     uint samples = u.path.z;
     uint max_bounces = u.path.y;
+    // Under the similarity relation a random walk takes 1 / (1 - g) times as many
+    // (shorter) steps to cover the same distance.
+    uint volume_limit = uint(float(MAX_VOLUME_EVENTS) / (1.0 - clamp(u.env.z, 0.0, 0.95)));
     float step_mm = u.dims.w;
     mat3 light_frame = basis(u.light_dir.xyz);
     vec3 light = vec3(u.light_dir.w);
@@ -396,7 +425,7 @@ void main() {
         // surface events, volume events (random walks below surfaces, which need
         // many steps to carry light back out) have their own.
         for (uint bounce = 0u, surfaces = 0u, volumes = 0u;
-             surfaces <= max_bounces && volumes <= MAX_VOLUME_EVENTS; bounce++) {
+             surfaces <= max_bounces && volumes <= volume_limit; bounce++) {
             vec3 idx;
             Sample s;
             int cap_plane;
@@ -488,7 +517,7 @@ void main() {
                 // Volume scattering: forward-peaked phase function, with the
                 // single-scattering albedo that makes the material's colour its
                 // multiple-scattering albedo.
-                vec3 albedo = single_scattering_albedo(s.albedo);
+                vec3 albedo = event_albedo(s);
                 float light_phase = phase_hg(dot(dir, light_dir));
                 radiance += path_weight * albedo * light_phase * light * light_t
                     * (area_light ? mis(light_pdf, light_phase) : 1.0);

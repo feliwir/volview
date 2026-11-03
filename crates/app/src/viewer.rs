@@ -1537,12 +1537,7 @@ fn pick(
     let to_index = volume.index_to_world().inverse().as_mat4();
     let dims = volume.dims.as_ivec3();
 
-    let mut style = [None; 256];
-    if let Some(l) = labels {
-        for e in &l.entries {
-            style[e.value as usize] = Some(e.style);
-        }
-    }
+    let style = labels.map_or([None; 256], |l| l.styles());
     let isolate =
         labels.is_some() && matches!(s.label_mode, LabelMode::Isolate | LabelMode::Hybrid);
     let tint = labels.is_some() && s.label_mode == LabelMode::Tint;

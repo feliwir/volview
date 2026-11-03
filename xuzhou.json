@@ -1,0 +1,877 @@
+{
+  "dataset": {
+    "dicom_dir": "/home/stephan/Devel/volview/data/samples/xuzhou_cta",
+    "series": "2.25.217156849675824368112287040437721406335.4",
+    "labels": null
+  },
+  "env_map": "data/hdri/studio_small_09_2k.hdr",
+  "image_size": [
+    933,
+    960
+  ],
+  "settings": {
+    "camera": {
+      "target": [
+        -1.3225,
+        -11.2635,
+        65.866
+      ],
+      "distance": 883.04376,
+      "yaw": 5.755108,
+      "pitch": -0.05014649,
+      "fov_y": 0.5235988
+    },
+    "preset": 0,
+    "step_scale": 0.5,
+    "resolution_scale": 1.0,
+    "label_mode": "Hybrid",
+    "tint": 0.7,
+    "extinction": 0.5,
+    "palette": "Anatomical",
+    "lighting": {
+      "azimuth": -1.0471976,
+      "elevation": 0.6981317,
+      "intensity": 3.0,
+      "ambient": 0.3,
+      "environment": "Map",
+      "light_size": 0.20943952,
+      "env_rotation": 0.0,
+      "anisotropy": 0.6,
+      "chromatic": 1.0,
+      "shadows": true,
+      "ambient_occlusion": true,
+      "exposure": 0.0,
+      "auto_exposure": true,
+      "bloom": 0.04,
+      "vignette": 0.25,
+      "grain": 0.012,
+      "tone_mapper": "Aces",
+      "roughness": 0.5,
+      "metalness": 0.0,
+      "subsurface": 0.3,
+      "scattering_distance": 10.0,
+      "subsurface_strength": 1.0,
+      "surface_detail": 1.0
+    },
+    "preintegrate": false,
+    "skip_empty_space": true,
+    "smooth_sampling": true,
+    "ghost_opacity": 0.08,
+    "cut_margin": 2.0,
+    "label_smoothing": 1,
+    "clipping": {
+      "planes": [
+        {
+          "enabled": false,
+          "plane": "Sagittal",
+          "cut_positive": false,
+          "position": -1.3224945
+        },
+        {
+          "enabled": false,
+          "plane": "Coronal",
+          "cut_positive": false,
+          "position": -11.263504
+        },
+        {
+          "enabled": false,
+          "plane": "Axial",
+          "cut_positive": false,
+          "position": 65.866
+        }
+      ],
+      "all": false
+    },
+    "path_trace": true,
+    "path_tracing": {
+      "bounces": 4,
+      "samples_per_frame": 1,
+      "denoiser": "Oidn",
+      "aperture": 0.0,
+      "focus": null
+    },
+    "max_samples": 1024
+  },
+  "labels": [
+    {
+      "name": "liver",
+      "style": "Shown",
+      "color": [
+        0.14702728,
+        0.023153314,
+        0.01444384
+      ],
+      "roughness": 0.25,
+      "metalness": 0.0,
+      "subsurface": 0.6,
+      "coat": 0.8
+    },
+    {
+      "name": "lung_upper_lobe_left",
+      "style": "Shown",
+      "color": [
+        0.5775805,
+        0.33245158,
+        0.35153273
+      ],
+      "roughness": 0.5,
+      "metalness": 0.0,
+      "subsurface": 0.15,
+      "coat": 0.3
+    },
+    {
+      "name": "lung_lower_lobe_left",
+      "style": "Shown",
+      "color": [
+        0.5775805,
+        0.33245158,
+        0.35153273
+      ],
+      "roughness": 0.5,
+      "metalness": 0.0,
+      "subsurface": 0.15,
+      "coat": 0.3
+    },
+    {
+      "name": "lung_upper_lobe_right",
+      "style": "Shown",
+      "color": [
+        0.5775805,
+        0.33245158,
+        0.35153273
+      ],
+      "roughness": 0.5,
+      "metalness": 0.0,
+      "subsurface": 0.15,
+      "coat": 0.3
+    },
+    {
+      "name": "lung_lower_lobe_right",
+      "style": "Shown",
+      "color": [
+        0.5775805,
+        0.33245158,
+        0.35153273
+      ],
+      "roughness": 0.5,
+      "metalness": 0.0,
+      "subsurface": 0.15,
+      "coat": 0.3
+    },
+    {
+      "name": "esophagus",
+      "style": "Shown",
+      "color": [
+        0.47932023,
+        0.17788833,
+        0.14412849
+      ],
+      "roughness": 0.3,
+      "metalness": 0.0,
+      "subsurface": 0.6,
+      "coat": 0.8
+    },
+    {
+      "name": "trachea",
+      "style": "Shown",
+      "color": [
+        0.6724432,
+        0.68668544,
+        0.62396044
+      ],
+      "roughness": 0.35,
+      "metalness": 0.0,
+      "subsurface": 0.15,
+      "coat": 0.3
+    },
+    {
+      "name": "thyroid_gland",
+      "style": "Shown",
+      "color": [
+        0.25415218,
+        0.043734957,
+        0.027320893
+      ],
+      "roughness": 0.3,
+      "metalness": 0.0,
+      "subsurface": 0.5,
+      "coat": 0.5
+    },
+    {
+      "name": "vertebrae_T6",
+      "style": "Shown",
+      "color": [
+        0.8387991,
+        0.79129803,
+        0.701102
+      ],
+      "roughness": 0.42,
+      "metalness": 0.0,
+      "subsurface": 0.15,
+      "coat": 0.0
+    },
+    {
+      "name": "vertebrae_T5",
+      "style": "Shown",
+      "color": [
+        0.8387991,
+        0.79129803,
+        0.701102
+      ],
+      "roughness": 0.42,
+      "metalness": 0.0,
+      "subsurface": 0.15,
+      "coat": 0.0
+    },
+    {
+      "name": "vertebrae_T4",
+      "style": "Shown",
+      "color": [
+        0.8387991,
+        0.79129803,
+        0.701102
+      ],
+      "roughness": 0.42,
+      "metalness": 0.0,
+      "subsurface": 0.15,
+      "coat": 0.0
+    },
+    {
+      "name": "vertebrae_T3",
+      "style": "Shown",
+      "color": [
+        0.8387991,
+        0.79129803,
+        0.701102
+      ],
+      "roughness": 0.42,
+      "metalness": 0.0,
+      "subsurface": 0.15,
+      "coat": 0.0
+    },
+    {
+      "name": "vertebrae_T2",
+      "style": "Shown",
+      "color": [
+        0.8387991,
+        0.79129803,
+        0.701102
+      ],
+      "roughness": 0.42,
+      "metalness": 0.0,
+      "subsurface": 0.15,
+      "coat": 0.0
+    },
+    {
+      "name": "vertebrae_T1",
+      "style": "Shown",
+      "color": [
+        0.8387991,
+        0.79129803,
+        0.701102
+      ],
+      "roughness": 0.42,
+      "metalness": 0.0,
+      "subsurface": 0.15,
+      "coat": 0.0
+    },
+    {
+      "name": "vertebrae_C7",
+      "style": "Shown",
+      "color": [
+        0.8387991,
+        0.79129803,
+        0.701102
+      ],
+      "roughness": 0.42,
+      "metalness": 0.0,
+      "subsurface": 0.15,
+      "coat": 0.0
+    },
+    {
+      "name": "vertebrae_C6",
+      "style": "Shown",
+      "color": [
+        0.8387991,
+        0.79129803,
+        0.701102
+      ],
+      "roughness": 0.42,
+      "metalness": 0.0,
+      "subsurface": 0.15,
+      "coat": 0.0
+    },
+    {
+      "name": "vertebrae_C5",
+      "style": "Shown",
+      "color": [
+        0.8387991,
+        0.79129803,
+        0.701102
+      ],
+      "roughness": 0.42,
+      "metalness": 0.0,
+      "subsurface": 0.15,
+      "coat": 0.0
+    },
+    {
+      "name": "vertebrae_C4",
+      "style": "Shown",
+      "color": [
+        0.8387991,
+        0.79129803,
+        0.701102
+      ],
+      "roughness": 0.42,
+      "metalness": 0.0,
+      "subsurface": 0.15,
+      "coat": 0.0
+    },
+    {
+      "name": "vertebrae_C3",
+      "style": "Shown",
+      "color": [
+        0.8387991,
+        0.79129803,
+        0.701102
+      ],
+      "roughness": 0.42,
+      "metalness": 0.0,
+      "subsurface": 0.15,
+      "coat": 0.0
+    },
+    {
+      "name": "vertebrae_C2",
+      "style": "Shown",
+      "color": [
+        0.8387991,
+        0.79129803,
+        0.701102
+      ],
+      "roughness": 0.42,
+      "metalness": 0.0,
+      "subsurface": 0.15,
+      "coat": 0.0
+    },
+    {
+      "name": "vertebrae_C1",
+      "style": "Shown",
+      "color": [
+        0.8387991,
+        0.79129803,
+        0.701102
+      ],
+      "roughness": 0.42,
+      "metalness": 0.0,
+      "subsurface": 0.15,
+      "coat": 0.0
+    },
+    {
+      "name": "heart",
+      "style": "Shown",
+      "color": [
+        0.19461781,
+        0.012983034,
+        0.012983034
+      ],
+      "roughness": 0.3,
+      "metalness": 0.0,
+      "subsurface": 0.45,
+      "coat": 0.8
+    },
+    {
+      "name": "aorta",
+      "style": "Shown",
+      "color": [
+        0.44520125,
+        0.042311538,
+        0.029556822
+      ],
+      "roughness": 0.25,
+      "metalness": 0.0,
+      "subsurface": 0.45,
+      "coat": 0.8
+    },
+    {
+      "name": "brachiocephalic_trunk",
+      "style": "Shown",
+      "color": [
+        0.44520125,
+        0.042311538,
+        0.029556822
+      ],
+      "roughness": 0.25,
+      "metalness": 0.0,
+      "subsurface": 0.45,
+      "coat": 0.8
+    },
+    {
+      "name": "subclavian_artery_right",
+      "style": "Shown",
+      "color": [
+        0.44520125,
+        0.042311538,
+        0.029556822
+      ],
+      "roughness": 0.25,
+      "metalness": 0.0,
+      "subsurface": 0.45,
+      "coat": 0.8
+    },
+    {
+      "name": "subclavian_artery_left",
+      "style": "Shown",
+      "color": [
+        0.44520125,
+        0.042311538,
+        0.029556822
+      ],
+      "roughness": 0.25,
+      "metalness": 0.0,
+      "subsurface": 0.45,
+      "coat": 0.8
+    },
+    {
+      "name": "common_carotid_artery_right",
+      "style": "Shown",
+      "color": [
+        0.44520125,
+        0.042311538,
+        0.029556822
+      ],
+      "roughness": 0.25,
+      "metalness": 0.0,
+      "subsurface": 0.45,
+      "coat": 0.8
+    },
+    {
+      "name": "common_carotid_artery_left",
+      "style": "Shown",
+      "color": [
+        0.44520125,
+        0.042311538,
+        0.029556822
+      ],
+      "roughness": 0.25,
+      "metalness": 0.0,
+      "subsurface": 0.45,
+      "coat": 0.8
+    },
+    {
+      "name": "brachiocephalic_vein_left",
+      "style": "Shown",
+      "color": [
+        0.048171844,
+        0.023153365,
+        0.06847818
+      ],
+      "roughness": 0.25,
+      "metalness": 0.0,
+      "subsurface": 0.45,
+      "coat": 0.8
+    },
+    {
+      "name": "brachiocephalic_vein_right",
+      "style": "Shown",
+      "color": [
+        0.048171844,
+        0.023153365,
+        0.06847818
+      ],
+      "roughness": 0.25,
+      "metalness": 0.0,
+      "subsurface": 0.45,
+      "coat": 0.8
+    },
+    {
+      "name": "superior_vena_cava",
+      "style": "Shown",
+      "color": [
+        0.048171844,
+        0.023153365,
+        0.06847818
+      ],
+      "roughness": 0.25,
+      "metalness": 0.0,
+      "subsurface": 0.45,
+      "coat": 0.8
+    },
+    {
+      "name": "humerus_left",
+      "style": "Shown",
+      "color": [
+        0.8387991,
+        0.79129803,
+        0.701102
+      ],
+      "roughness": 0.42,
+      "metalness": 0.0,
+      "subsurface": 0.15,
+      "coat": 0.0
+    },
+    {
+      "name": "humerus_right",
+      "style": "Shown",
+      "color": [
+        0.8387991,
+        0.79129803,
+        0.701102
+      ],
+      "roughness": 0.42,
+      "metalness": 0.0,
+      "subsurface": 0.15,
+      "coat": 0.0
+    },
+    {
+      "name": "scapula_left",
+      "style": "Shown",
+      "color": [
+        0.8387991,
+        0.79129803,
+        0.701102
+      ],
+      "roughness": 0.42,
+      "metalness": 0.0,
+      "subsurface": 0.15,
+      "coat": 0.0
+    },
+    {
+      "name": "scapula_right",
+      "style": "Shown",
+      "color": [
+        0.8387991,
+        0.79129803,
+        0.701102
+      ],
+      "roughness": 0.42,
+      "metalness": 0.0,
+      "subsurface": 0.15,
+      "coat": 0.0
+    },
+    {
+      "name": "clavicula_left",
+      "style": "Shown",
+      "color": [
+        0.8387991,
+        0.79129803,
+        0.701102
+      ],
+      "roughness": 0.42,
+      "metalness": 0.0,
+      "subsurface": 0.15,
+      "coat": 0.0
+    },
+    {
+      "name": "clavicula_right",
+      "style": "Shown",
+      "color": [
+        0.8387991,
+        0.79129803,
+        0.701102
+      ],
+      "roughness": 0.42,
+      "metalness": 0.0,
+      "subsurface": 0.15,
+      "coat": 0.0
+    },
+    {
+      "name": "spinal_cord",
+      "style": "Shown",
+      "color": [
+        0.79129803,
+        0.6866855,
+        0.5775805
+      ],
+      "roughness": 0.3,
+      "metalness": 0.0,
+      "subsurface": 0.5,
+      "coat": 0.5
+    },
+    {
+      "name": "autochthon_left",
+      "style": "Shown",
+      "color": [
+        0.27049786,
+        0.023153316,
+        0.0159963
+      ],
+      "roughness": 0.4,
+      "metalness": 0.0,
+      "subsurface": 0.5,
+      "coat": 0.4
+    },
+    {
+      "name": "autochthon_right",
+      "style": "Shown",
+      "color": [
+        0.27049786,
+        0.023153316,
+        0.0159963
+      ],
+      "roughness": 0.4,
+      "metalness": 0.0,
+      "subsurface": 0.5,
+      "coat": 0.4
+    },
+    {
+      "name": "brain",
+      "style": "Shown",
+      "color": [
+        0.68668544,
+        0.47932017,
+        0.43415368
+      ],
+      "roughness": 0.3,
+      "metalness": 0.0,
+      "subsurface": 0.5,
+      "coat": 0.5
+    },
+    {
+      "name": "skull",
+      "style": "Shown",
+      "color": [
+        0.8387991,
+        0.79129803,
+        0.701102
+      ],
+      "roughness": 0.42,
+      "metalness": 0.0,
+      "subsurface": 0.15,
+      "coat": 0.0
+    },
+    {
+      "name": "rib_left_1",
+      "style": "Shown",
+      "color": [
+        0.8387991,
+        0.79129803,
+        0.701102
+      ],
+      "roughness": 0.42,
+      "metalness": 0.0,
+      "subsurface": 0.15,
+      "coat": 0.0
+    },
+    {
+      "name": "rib_left_2",
+      "style": "Shown",
+      "color": [
+        0.8387991,
+        0.79129803,
+        0.701102
+      ],
+      "roughness": 0.42,
+      "metalness": 0.0,
+      "subsurface": 0.15,
+      "coat": 0.0
+    },
+    {
+      "name": "rib_left_3",
+      "style": "Shown",
+      "color": [
+        0.8387991,
+        0.79129803,
+        0.701102
+      ],
+      "roughness": 0.42,
+      "metalness": 0.0,
+      "subsurface": 0.15,
+      "coat": 0.0
+    },
+    {
+      "name": "rib_left_4",
+      "style": "Shown",
+      "color": [
+        0.8387991,
+        0.79129803,
+        0.701102
+      ],
+      "roughness": 0.42,
+      "metalness": 0.0,
+      "subsurface": 0.15,
+      "coat": 0.0
+    },
+    {
+      "name": "rib_left_5",
+      "style": "Shown",
+      "color": [
+        0.8387991,
+        0.79129803,
+        0.701102
+      ],
+      "roughness": 0.42,
+      "metalness": 0.0,
+      "subsurface": 0.15,
+      "coat": 0.0
+    },
+    {
+      "name": "rib_left_6",
+      "style": "Shown",
+      "color": [
+        0.8387991,
+        0.79129803,
+        0.701102
+      ],
+      "roughness": 0.42,
+      "metalness": 0.0,
+      "subsurface": 0.15,
+      "coat": 0.0
+    },
+    {
+      "name": "rib_right_1",
+      "style": "Shown",
+      "color": [
+        0.8387991,
+        0.79129803,
+        0.701102
+      ],
+      "roughness": 0.42,
+      "metalness": 0.0,
+      "subsurface": 0.15,
+      "coat": 0.0
+    },
+    {
+      "name": "rib_right_2",
+      "style": "Shown",
+      "color": [
+        0.8387991,
+        0.79129803,
+        0.701102
+      ],
+      "roughness": 0.42,
+      "metalness": 0.0,
+      "subsurface": 0.15,
+      "coat": 0.0
+    },
+    {
+      "name": "rib_right_3",
+      "style": "Shown",
+      "color": [
+        0.8387991,
+        0.79129803,
+        0.701102
+      ],
+      "roughness": 0.42,
+      "metalness": 0.0,
+      "subsurface": 0.15,
+      "coat": 0.0
+    },
+    {
+      "name": "rib_right_4",
+      "style": "Shown",
+      "color": [
+        0.8387991,
+        0.79129803,
+        0.701102
+      ],
+      "roughness": 0.42,
+      "metalness": 0.0,
+      "subsurface": 0.15,
+      "coat": 0.0
+    },
+    {
+      "name": "rib_right_5",
+      "style": "Shown",
+      "color": [
+        0.8387991,
+        0.79129803,
+        0.701102
+      ],
+      "roughness": 0.42,
+      "metalness": 0.0,
+      "subsurface": 0.15,
+      "coat": 0.0
+    },
+    {
+      "name": "rib_right_6",
+      "style": "Shown",
+      "color": [
+        0.8387991,
+        0.79129803,
+        0.701102
+      ],
+      "roughness": 0.42,
+      "metalness": 0.0,
+      "subsurface": 0.15,
+      "coat": 0.0
+    },
+    {
+      "name": "sternum",
+      "style": "Shown",
+      "color": [
+        0.8387991,
+        0.79129803,
+        0.701102
+      ],
+      "roughness": 0.42,
+      "metalness": 0.0,
+      "subsurface": 0.15,
+      "coat": 0.0
+    },
+    {
+      "name": "costal_cartilages",
+      "style": "Shown",
+      "color": [
+        0.6724432,
+        0.68668544,
+        0.62396044
+      ],
+      "roughness": 0.35,
+      "metalness": 0.0,
+      "subsurface": 0.15,
+      "coat": 0.0
+    },
+    {
+      "name": "soft tissue",
+      "style": "Shown",
+      "color": [
+        0.39157256,
+        0.0908417,
+        0.06480327
+      ],
+      "roughness": 0.4,
+      "metalness": 0.0,
+      "subsurface": 0.7,
+      "coat": 0.6
+    },
+    {
+      "name": "fat",
+      "style": "Shown",
+      "color": [
+        0.71569365,
+        0.55201155,
+        0.26225072
+      ],
+      "roughness": 0.35,
+      "metalness": 0.0,
+      "subsurface": 0.7,
+      "coat": 0.6
+    },
+    {
+      "name": "table / devices",
+      "style": "Hidden",
+      "color": [
+        0.4341537,
+        0.16202943,
+        0.11697069
+      ],
+      "roughness": 0.35,
+      "metalness": 0.0,
+      "subsurface": 0.5,
+      "coat": 0.5
+    },
+    {
+      "name": "skin",
+      "style": "Shown",
+      "color": [
+        0.80695236,
+        0.47932032,
+        0.33245158
+      ],
+      "roughness": 0.45,
+      "metalness": 0.0,
+      "subsurface": 0.5,
+      "coat": 0.2
+    }
+  ]
+}

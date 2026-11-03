@@ -143,6 +143,30 @@ float surface_frame(
     return 1.0;
 }
 
+// Whether `s` is solid labelled tissue with measured optics (label_optics).
+bool measured(Sample s) {
+    return u.labels.x >= 2.0 && s.label != 0u && !s.ghost && u.label_optics[s.label].w > 0.0;
+}
+
+// Extinction (1/mm, rgb) of measured tissue. The measurements give the reduced
+// scattering coefficient μs′ = μs (1 - g); with the phase function's g, the
+// similarity relation scales it to μs′ / (1 - g), so g changes how light leaves
+// a surface but not how far it diffuses. Absorption comes from the tissue's
+// colour (event_albedo) and is small next to scattering, so μs′ stands in for
+// the reduced extinction. The hybrid fade-out of the label (s.extinction below
+// the label opacity) thins the tissue the same way. Mean free paths below the
+// CT's resolution (u.tissue.y) are lengthened, keeping the channels' ratios:
+// the tissue then diffuses light further than measured, but without tracing
+// the label's slice terraces.
+vec3 tissue_sigma(Sample s) {
+    vec3 mu = u.label_optics[s.label].rgb;
+    mu = mix(vec3(mu.g), mu, u.env.w);  // chromatic 0: grey, at the green channel's value
+    mu /= 1.0 - clamp(u.env.z, 0.0, 0.95);
+    mu *= min(1.0, u.tissue.y / max(max(mu.r, max(mu.g, mu.b)), 1e-6));
+    float occupancy = clamp(s.extinction / max(u.labels.z, 1e-6), 0.0, 1.0);
+    return occupancy * mu;
+}
+
 // Procedural surface texture of labelled tissue (u.label_surface): solid
 // noise in patient space (mm), so it sticks to the anatomy as the camera moves.
 

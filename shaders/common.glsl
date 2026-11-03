@@ -23,11 +23,13 @@ layout(set = 0, binding = 0, std140) uniform Uniforms {
     vec4 env;             // x: light map rotation (radians), y: 1 = cubic B-spline sampling, z: phase anisotropy g, w: chromatic extinction strength
     vec4 lens;            // path tracing: x lens radius (mm, 0 = pinhole), y focus distance along the view axis (mm)
     vec4 finish;          // camera finishing: x bloom, y vignette, z grain strength, w: 1 = auto exposure
+    vec4 tissue;          // path tracing: x largest extinction of tissue with measured optics, y its resolution limit (1/mm)
     vec4 tf_bucket_max[16];  // largest transfer-function extinction in each 1/64 of the density range
     vec4 label_colors[256];     // per label: rgb albedo, a: 0 hidden, 1 shown, 2 ghosted
     vec4 label_materials[256];  // per label: x roughness, y metalness, z clear coat (wetness), w subsurface amount
     vec4 label_density[256];    // per label (hybrid): opacity ramp start/end, median, IQR (normalised density; IQR < 0: hollow)
     vec4 label_surface[256];    // per label: surface texture pattern (0 none, 1 mottled, 2 lobular), colour variation, relief (mm), feature size (mm)
+    vec4 label_optics[256];     // per label: rgb measured reduced scattering coefficient (1/mm), w: 1 = measured
 } u;
 
 layout(set = 0, binding = 1) uniform sampler3D density_tex;  // HU normalised to [0, 1]
@@ -57,10 +59,11 @@ const float PI = 3.14159265358979;
 // Label of the skin shell (crates/app/src/skin.rs), derived from the CT: its
 // outer surface is the CT's air boundary, so it is shaded by the CT's normals.
 const uint SKIN_LABEL = 255u;
-// Labels from 251 up are derived from the CT after segmenting (251 soft
-// tissue, 252 fat: crates/app/src/context.rs; 253 devices, 255 skin:
-// crates/app/src/skin.rs): the model's margins know nothing of them.
-const uint FIRST_CT_LABEL = 251u;
+// Labels from 250 up are derived from the CT after segmenting (250 bone:
+// crates/app/src/bone.rs; 251 soft tissue, 252 fat: crates/app/src/context.rs;
+// 253 devices, 255 skin: crates/app/src/skin.rs): the model's margins know
+// nothing of them.
+const uint FIRST_CT_LABEL = 250u;
 
 vec3 index_to_tex(vec3 idx) {
     return (idx + 0.5) / u.dims.xyz;

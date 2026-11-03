@@ -14,6 +14,8 @@ const SKIN_THICKNESS_MM: f32 = 3.0;
 const CONTEXT_GAP_MM: f32 = 16.0;
 /// Depth below the skin taken as body wall, left out of the context tissue.
 const BODY_WALL_MM: f32 = 30.0;
+/// How far unlabelled bone may extend from the skull (see crate::bone::add_bone).
+const BONE_REACH_MM: f32 = 8.0;
 
 pub struct LabelEntry {
     pub value: u8,
@@ -142,6 +144,37 @@ impl Group {
         }
     }
 
+    /// Measured reduced scattering coefficient of the tissue: μs′(λ) =
+    /// a · (λ / 500 nm)^-b with `(a, b)`, a in 1/mm. Means per tissue type from
+    /// Jacques, "Optical properties of biological tissues: a review", Phys. Med.
+    /// Biol. 58 (2013), table 2. The review has no lung average; lung, organs,
+    /// muscle and vessels use its "other soft tissues".
+    fn scattering(self, name: &str) -> (f32, f32) {
+        const SKIN: (f32, f32) = (4.60, 1.421);
+        const BRAIN: (f32, f32) = (2.42, 1.611);
+        const BONE: (f32, f32) = (2.29, 0.716);
+        const FIBROUS: (f32, f32) = (2.71, 1.627);
+        const FATTY: (f32, f32) = (1.84, 0.672);
+        const SOFT: (f32, f32) = (1.89, 1.286);
+        match self {
+            Group::Skin => SKIN,
+            Group::Skeleton if name.contains("cartilage") => FIBROUS,
+            Group::Skeleton => BONE,
+            Group::Context if name == "fat" => FATTY,
+            Group::Other if name.contains("brain") => BRAIN,
+            _ => SOFT,
+        }
+    }
+
+    /// Reduced scattering coefficient (1/mm) at the wavelengths standing in for
+    /// the red, green and blue channels; w = 1 marks it as measured.
+    pub fn optics(self, name: &str) -> [f32; 4] {
+        const CHANNEL_NM: [f32; 3] = [650.0, 550.0, 450.0];
+        let (a, b) = self.scattering(name);
+        let [r, g, bl] = CHANNEL_NM.map(|nm| a * (nm / 500.0).powf(-b));
+        [r, g, bl, 1.0]
+    }
+
     pub fn name(self) -> &'static str {
         match self {
             Group::Skin => "Skin",
@@ -227,6 +260,10 @@ pub struct LabelSet {
     /// The segmentation model's decision margins, when it came from our segmenter:
     /// used to place boundaries between CT voxels (see mask.comp).
     pub soft: Option<seg::SoftLabels>,
+    /// Bone that the skull label misses ([`crate::bone::BONE`]): it has no entry
+    /// of its own but looks like the skull's (by value), apart from its own
+    /// density statistics, since thin plates are less dense than the skull.
+    thin_bone: Option<(u8, [f32; 4])>,
 }
 
 impl LabelSet {
@@ -235,6 +272,13 @@ impl LabelSet {
     /// Adds a [`crate::skin`] shell to the unlabelled voxels at the body surface.
     pub fn new(mut data: Vec<u8>, names: &BTreeMap<u8, String>, vol: &volio::Volume) -> Self {
         crate::skin::add_skin(&mut data, vol, SKIN_THICKNESS_MM);
+        // Only the skull: the other bones are compact, and contrast-filled veins
+        // run along the clavicles and first ribs.
+        let skull_value = names
+            .iter()
+            .find_map(|(&v, name)| (name == "skull").then_some(v));
+        let skull: [bool; 256] = std::array::from_fn(|v| Some(v as u8) == skull_value);
+        crate::bone::add_bone(&mut data, vol, &skull, BONE_REACH_MM);
         // Fat and connective tissue around the organs. Not around bone, skin or
         // the brain, whose surroundings are body wall and meninges, nor the
         // lungs, which fill the chest wall to wall: the heart and great vessels
@@ -264,7 +308,9 @@ impl LabelSet {
             .map(|h| h.iter().map(|&c| c as usize).sum())
             .collect();
         let entries = (1..=255u8)
-            .filter(|&v| counts[v as usize] > 0 && v != crate::skin::SKIN_OUTER)
+            .filter(|&v| {
+                counts[v as usize] > 0 && v != crate::skin::SKIN_OUTER && v != crate::bone::BONE
+            })
             .map(|value| {
                 let name = if value == crate::skin::SKIN {
                     "skin".to_string()
@@ -313,10 +359,15 @@ impl LabelSet {
                 }
             })
             .collect();
+        let bone = crate::bone::BONE as usize;
+        let thin_bone = skull_value
+            .filter(|_| counts[bone] > 0)
+            .map(|skull| (skull, density_stats(&histograms[bone])));
         let mut set = Self {
             data,
             entries,
             soft: None,
+            thin_bone,
         };
         set.apply_palette(Palette::Anatomical);
         set
@@ -379,11 +430,33 @@ impl LabelSet {
             let v = e.value as usize;
             params.colors[v] = [r, g, b, if e.style == Style::Hidden { 0.0 } else { 1.0 }];
             params.materials[v] = [e.roughness, e.metalness, e.subsurface, e.coat];
+            params.optics[v] = e.group.optics(&e.name);
             params.surface[v] = e.surface;
             params.ghost[v] = e.style == Style::Ghost;
             params.density[v] = e.density;
         }
+        if let Some((skull, density)) = self.thin_bone {
+            let (from, to) = (skull as usize, crate::bone::BONE as usize);
+            params.colors[to] = params.colors[from];
+            params.materials[to] = params.materials[from];
+            params.optics[to] = params.optics[from];
+            params.surface[to] = params.surface[from];
+            params.ghost[to] = params.ghost[from];
+            params.density[to] = density;
+        }
         params
+    }
+
+    /// The style of every label value, `None` for values without a label.
+    pub fn styles(&self) -> [Option<Style>; 256] {
+        let mut style = [None; 256];
+        for e in &self.entries {
+            style[e.value as usize] = Some(e.style);
+        }
+        if let Some((skull, _)) = self.thin_bone {
+            style[crate::bone::BONE as usize] = style[skull as usize];
+        }
+        style
     }
 }
 

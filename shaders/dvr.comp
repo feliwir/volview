@@ -10,6 +10,16 @@
 
 layout(local_size_x = 8, local_size_y = 8) in;
 
+// `apply_labels`, with tissue of measured optics as dense as the path tracer
+// draws it (tissue_sigma), so both renderers see the surface at the same depth.
+Sample labelled(Sample s, vec3 idx) {
+    s = apply_labels(s, idx);
+    if (measured(s)) {
+        s.extinction = dot(tissue_sigma(s), vec3(1.0 / 3.0));
+    }
+    return s;
+}
+
 void main() {
     uvec2 pixel = gl_GlobalInvocationID.xy;
     if (any(greaterThanEqual(pixel, u.flags.zw))) {
@@ -53,7 +63,7 @@ void main() {
             bool segment = preintegrate && front_density >= 0.0;
             Sample s = segment ? tf_segment(front_density, density) : tf_point(density);
             prev_density = density;
-            s = apply_labels(s, idx);
+            s = labelled(s, idx);
             if (s.extinction <= 0.0) {
                 continue;
             }
@@ -79,7 +89,7 @@ void main() {
                 for (int i = 0; i < 5; i++) {
                     float mid = 0.5 * (inside + outside);
                     vec3 at = idx + d_idx * mid;
-                    bool opaque = apply_labels(tf_point(density_view(at)), at).extinction >= target;
+                    bool opaque = labelled(tf_point(density_view(at)), at).extinction >= target;
                     inside = opaque ? mid : inside;
                     outside = opaque ? outside : mid;
                 }
@@ -117,7 +127,7 @@ void main() {
             // Part of the diffuse light is scattered below the surface: lit by the
             // diffused light instead of the hard shadow, and without the n.l falloff,
             // so it wraps around edges and bleeds through thin structures.
-            vec3 surface = (specular + diffuse * (1.0 - s.subsurface)) * nl * shadow
+            vec3 surface = (specular + diffuse) * (1.0 - s.subsurface) * nl * shadow
                 + diffuse * s.subsurface * diffused;
             // Homogeneous regions have no meaningful normal: isotropic scattering.
             vec3 volume = s.albedo / (4.0 * PI) * mix(vec3(shadow), diffused, s.subsurface);
@@ -125,7 +135,7 @@ void main() {
             // Light map: what a diffuse surface facing `n` receives; homogeneous
             // regions scatter the mean over all directions (1 x ambient).
             vec3 ambient_light = u.lighting.w == 2u
-                ? mix(u.ambient.rgb, env_map_diffuse(n), surfaceness)
+                ? mix(u.ambient.rgb, env_map_diffuse(n), surfaceness * (1.0 - s.subsurface))
                 : u.ambient.rgb;
             vec3 ambient = s.albedo * ambient_light * ao;
 

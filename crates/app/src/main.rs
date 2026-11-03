@@ -1,3 +1,4 @@
+mod bone;
 mod context;
 mod labels;
 mod scene;
