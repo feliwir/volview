@@ -65,6 +65,67 @@ impl Style {
     }
 }
 
+/// Name fragments of the bones and cartilage (TotalSegmentator "total" and subtasks).
+const BONES: &[&str] = &[
+    "vertebrae",
+    "rib_",
+    "sacrum",
+    "skull",
+    "sternum",
+    "cartilage",
+    "clavicula",
+    "scapula",
+    "humerus",
+    "femur",
+    "hip_",
+    "mandible",
+    "teeth",
+    "hyoid",
+    "zygomatic_arch",
+    "styloid_process",
+    "hard_palate",
+];
+
+/// Name fragments of the skeletal muscles. Matched before [`BONES`] and the
+/// organs: "thyrohyoid" and "sterno_thyroid" are muscles.
+const MUSCLES: &[&str] = &[
+    "gluteus",
+    "iliopsoas",
+    "autochthon",
+    "masseter",
+    "temporalis",
+    "pterygoid",
+    "tongue",
+    "digastric",
+    "sternocleidomastoid",
+    "constrictor",
+    "trapezius",
+    "platysma",
+    "levator_scapulae",
+    "scalene",
+    "sterno_thyroid",
+    "thyrohyoid",
+    "prevertebral",
+    "pectoralis",
+    "rectus_abdominis",
+    "serratus",
+    "latissimus",
+    "oblique",
+    "erector_spinae",
+    "transversospinalis",
+    "psoas",
+    "quadratus_lumborum",
+];
+
+/// Air spaces of the head and neck, outside the lungs.
+const AIR_SPACES: &[&str] = &[
+    "larynx_air",
+    "pharynx",
+    "nasal_cavity",
+    "sinus_",
+    "auditory_canal",
+];
+
 /// Anatomical system of a TotalSegmentator label, for switching structures together.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Group {
@@ -195,22 +256,10 @@ impl Group {
             Group::Skin
         } else if name == "fat" || name == "soft tissue" {
             Group::Context
-        } else if has(&[
-            "vertebrae",
-            "rib_",
-            "sacrum",
-            "skull",
-            "sternum",
-            "costal_cartilages",
-            "clavicula",
-            "scapula",
-            "humerus",
-            "femur",
-            "hip_",
-        ]) {
+        } else if has(MUSCLES) {
+            Group::Muscles
+        } else if has(BONES) {
             Group::Skeleton
-        } else if has(&["lung", "trachea"]) {
-            Group::Lungs
         } else if has(&[
             "heart",
             "atrial_appendage",
@@ -220,7 +269,10 @@ impl Group {
             "vein",
             "vena",
         ]) {
+            // Before the lungs: lung_arteries and lung_veins are vessels.
             Group::HeartVessels
+        } else if has(&["lung", "trachea"]) || has(AIR_SPACES) {
+            Group::Lungs
         } else if has(&[
             "liver",
             "spleen",
@@ -231,12 +283,13 @@ impl Group {
             "bowel",
             "duodenum",
             "colon",
+            "soft_palate",
+            "parotid_gland",
+            "submandibular_gland",
         ]) {
             Group::Digestive
         } else if has(&["kidney", "adrenal", "bladder", "prostate"]) {
             Group::Urogenital
-        } else if has(&["gluteus", "iliopsoas", "autochthon"]) {
-            Group::Muscles
         } else {
             Group::Other
         }
@@ -541,22 +594,28 @@ const ANATOMICAL: &[(&[&str], [u8; 3], f32)] = &[
     // Visceral fat is yellow; connective tissue and thin muscle pinkish red.
     (&["fat"], [0xdc, 0xc4, 0x8c], 0.35),
     (&["soft tissue"], [0xa8, 0x55, 0x48], 0.4),
-    (&["costal_cartilages", "trachea"], [0xd6, 0xd8, 0xcf], 0.35),
+    // Before the organs and bones they are named after (thyrohyoid, sterno_thyroid).
+    (MUSCLES, [0x8e, 0x2a, 0x22], 0.4),
     (
-        &[
-            "vertebrae",
-            "rib_",
-            "sacrum",
-            "skull",
-            "sternum",
-            "clavicula",
-            "scapula",
-            "humerus",
-            "femur",
-            "hip_",
-        ],
-        [0xec, 0xe6, 0xda],
-        0.42,
+        &["cartilage", "trachea", "lung_airways"],
+        [0xd6, 0xd8, 0xcf],
+        0.35,
+    ),
+    // Enamel is glossier and whiter than bone.
+    (&["teeth"], [0xf2, 0xee, 0xe0], 0.15),
+    (BONES, [0xec, 0xe6, 0xda], 0.42),
+    // Mucosa lining the air spaces and the soft palate.
+    (AIR_SPACES, [0xd0, 0x8a, 0x84], 0.2),
+    (&["soft_palate"], [0xc8, 0x78, 0x72], 0.25),
+    (&["eye_lens"], [0xe8, 0xe0, 0xb8], 0.1),
+    // Sclera: white, wet and glossy.
+    (&["eye_"], [0xf0, 0xec, 0xe4], 0.15),
+    (&["optic_nerve"], [0xe6, 0xd8, 0xc8], 0.3),
+    // Salivary glands: lobular, yellowish pink.
+    (
+        &["parotid_gland", "submandibular_gland"],
+        [0xd4, 0xa0, 0x80],
+        0.35,
     ),
     (&["liver"], [0x6b, 0x2a, 0x20], 0.25),
     (&["spleen"], [0x5e, 0x22, 0x33], 0.25),
@@ -572,20 +631,17 @@ const ANATOMICAL: &[(&[&str], [u8; 3], f32)] = &[
     (&["urinary_bladder"], [0xd8, 0xb9, 0xa6], 0.25),
     (&["prostate"], [0xb7, 0x7f, 0x6e], 0.3),
     (&["thyroid"], [0x8a, 0x3b, 0x2e], 0.3),
+    // Vessel labels cover the blood-filled lumen (see below). Before "lung":
+    // pulmonary arteries carry deoxygenated blood, pulmonary veins oxygenated.
+    (&["pulmonary_vein", "lung_veins"], [0xa0, 0x2c, 0x28], 0.25),
+    (&["lung_arteries"], [0x3e, 0x2a, 0x4a], 0.25),
     // Healthy adult lung is a greyish pink, not the salmon of solid organs.
     (&["lung"], [0xc8, 0x9c, 0xa0], 0.5),
     // Chambers and myocardium are one label; epicardial fat is not segmented.
     (&["heart", "atrial_appendage"], [0x7a, 0x1e, 0x1e], 0.3),
-    // Vessel labels cover the blood-filled lumen: bright arterial red, dark
-    // bluish-purple deoxygenated blood (pulmonary veins carry arterial blood).
-    (&["pulmonary_vein"], [0xa0, 0x2c, 0x28], 0.25),
+    // Bright arterial red, dark bluish-purple deoxygenated blood.
     (&["aorta", "arter", "trunk"], [0xb2, 0x3a, 0x30], 0.25),
     (&["vein", "vena"], [0x3e, 0x2a, 0x4a], 0.25),
-    (
-        &["gluteus", "iliopsoas", "autochthon"],
-        [0x8e, 0x2a, 0x22],
-        0.4,
-    ),
     (&["brain"], [0xd8, 0xb8, 0xb0], 0.3),
     (&["spinal_cord"], [0xe6, 0xd8, 0xc8], 0.3),
 ];
@@ -609,7 +665,13 @@ fn surface_texture(name: &str, group: Group) -> [f32; 4] {
         // Secondary pulmonary lobules (1-2.5 cm) outlined by interlobular
         // septa, which collect dark pigment (anthracosis) in adults.
         [2.0, 0.12, 0.25, 15.0]
-    } else if has(&["pancreas", "thyroid", "adrenal"]) {
+    } else if has(&[
+        "pancreas",
+        "thyroid_gland",
+        "adrenal",
+        "parotid",
+        "submandibular",
+    ]) {
         // Glands with small lobules.
         [1.0, 0.12, 0.3, 3.0]
     } else {
@@ -629,19 +691,9 @@ fn surface_texture(name: &str, group: Group) -> [f32; 4] {
 /// vertebrae) stay distinguishable; organs get hues spread by the golden ratio.
 fn distinct_material(value: u8, name: &str) -> ([f32; 3], f32) {
     let has = |keys: &[&str]| keys.iter().any(|k| name.contains(k));
-    let (base, roughness) = if has(&[
-        "vertebrae",
-        "rib_",
-        "sacrum",
-        "skull",
-        "sternum",
-        "costal_cartilages",
-        "clavicula",
-        "scapula",
-        "humerus",
-        "femur",
-        "hip_",
-    ]) {
+    let (base, roughness) = if has(MUSCLES) {
+        ([0.45, 0.10, 0.07], 0.5)
+    } else if has(BONES) {
         ([0.80, 0.70, 0.52], 0.65)
     } else if has(&["heart"]) {
         ([0.45, 0.04, 0.06], 0.35)
@@ -651,8 +703,6 @@ fn distinct_material(value: u8, name: &str) -> ([f32; 3], f32) {
         ([0.05, 0.12, 0.60], 0.3)
     } else if has(&["lung"]) {
         ([0.75, 0.42, 0.42], 0.7)
-    } else if has(&["gluteus", "iliopsoas", "autochthon"]) {
-        ([0.45, 0.10, 0.07], 0.5)
     } else {
         return (
             hsv_to_srgb((value as f32 * 0.618_034).fract(), 0.65, 0.85).map(srgb_to_linear),

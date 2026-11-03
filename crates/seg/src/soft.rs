@@ -22,7 +22,9 @@ pub struct SoftLabels {
     /// Volume axis that each canonical axis runs along, and whether it is reversed.
     pub src_axis: [usize; 3],
     pub flip: [bool; 3],
-    /// Per grid node (x fastest): best label, runner-up label, margin × 16, unused.
+    /// Per grid node (x fastest): best label, runner-up label, margin × 16, and 1
+    /// where a subtask changed the labels near the node (the margins only know the
+    /// "total" labels there), else 0.
     pub data: Vec<[u8; 4]>,
 }
 
@@ -34,17 +36,19 @@ impl SoftLabels {
         best: &[u8],
         second: &[u8],
         margin: &[f32],
+        overridden: &[bool],
     ) -> Self {
         let data = best
             .iter()
             .zip(second)
             .zip(margin)
-            .map(|((&b, &s), &m)| {
+            .zip(overridden)
+            .map(|(((&b, &s), &m), &o)| {
                 [
                     b,
                     s,
                     (m.clamp(0.0, MAX_MARGIN) * MARGIN_SCALE).round() as u8,
-                    0,
+                    o.into(),
                 ]
             })
             .collect();

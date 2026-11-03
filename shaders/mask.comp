@@ -36,22 +36,34 @@ float soft_score(bool best, bool second, float margin) {
     return best ? min(margin, CERTAIN) : -min(margin, CERTAIN);
 }
 
-// Masks from the model's margins, upsampled to the CT grid guided by the CT
-// itself (joint bilateral upsampling, Kopf et al. 2007): nodes that look like
-// this voxel in the CT count more, so boundaries snap to tissue edges at CT
-// resolution; without an edge they follow the smoothly interpolated margin.
-vec2 soft_masks(ivec3 p, ivec3 dims) {
+// Voxel `p` in soft-grid coordinates.
+vec3 soft_coord(ivec3 p, ivec3 dims) {
     ivec3 axis = pc.soft.xyz;
     ivec3 grid = textureSize(soft_tex, 0);
     vec3 can = vec3(dims[axis.x], dims[axis.y], dims[axis.z]);
-    vec3 to_grid = (vec3(grid) - 1.0) / max(can - 1.0, vec3(1.0));
-    // This voxel in grid coordinates.
     vec3 x;
     for (int a = 0; a < 3; a++) {
         float v = float(p[axis[a]]);
         x[a] = ((pc.soft.w >> a) & 1) != 0 ? can[a] - 1.0 - v : v;
     }
-    x *= to_grid;
+    return x * (vec3(grid) - 1.0) / max(can - 1.0, vec3(1.0));
+}
+
+// Whether the subtask models (finer than the soft grid) changed the labels at the
+// node nearest `x`: its margins only describe the "total" labels.
+bool soft_overridden(vec3 x) {
+    return texelFetch(soft_tex, ivec3(round(x)), 0).a != 0u;
+}
+
+// Masks from the model's margins, upsampled to the CT grid guided by the CT
+// itself (joint bilateral upsampling, Kopf et al. 2007): nodes that look like
+// this voxel in the CT count more, so boundaries snap to tissue edges at CT
+// resolution; without an edge they follow the smoothly interpolated margin.
+vec2 soft_masks(ivec3 p, ivec3 dims, vec3 x) {
+    ivec3 axis = pc.soft.xyz;
+    ivec3 grid = textureSize(soft_tex, 0);
+    vec3 can = vec3(dims[axis.x], dims[axis.y], dims[axis.z]);
+    vec3 to_grid = (vec3(grid) - 1.0) / max(can - 1.0, vec3(1.0));
 
     uint mode = uint(u.labels.x);
     float here = texelFetch(density_tex, p, 0).r;
@@ -95,10 +107,15 @@ bool label_removed(uint label) {
 vec2 binary_masks(ivec3 p, ivec3 dims) {
     uint mode = uint(u.labels.x);
     uint label = texelFetch(label_tex, p, 0).r;
-    // Labels derived from the CT (skin, devices) are drawn by their own voxels.
-    vec2 m = (pc.soft.w & 8) != 0 && label < FIRST_CT_LABEL
-        ? soft_masks(p, dims)
-        : vec2(label_solid(label, mode), label_ghosted(label));
+    // Labels derived from the CT (skin, devices) are drawn by their own voxels, and
+    // so are the subtasks' labels.
+    vec2 m = vec2(label_solid(label, mode), label_ghosted(label));
+    if ((pc.soft.w & 8) != 0 && label < FIRST_CT_LABEL) {
+        vec3 x = soft_coord(p, dims);
+        if (!soft_overridden(x)) {
+            m = soft_masks(p, dims, x);
+        }
+    }
     // Tint mode draws unlabelled tissue, and segmentations end slightly inside the
     // real boundary (e.g. they miss the cortical rim of bone). Removing a label
     // would leave that rim as a hollow shell, so unlabelled voxels within the

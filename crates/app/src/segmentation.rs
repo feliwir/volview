@@ -73,11 +73,11 @@ fn cache_paths(vol: &Volume) -> Option<(PathBuf, PathBuf)> {
     let base = std::env::var_os("XDG_CACHE_HOME")
         .map(PathBuf::from)
         .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".cache")))?;
-    // v3: with the model's decision margins (soft labels).
+    // v3: with the model's decision margins (soft labels). v4: with the subtasks.
     let dir = base.join("volview/labels");
     Some((
-        dir.join(format!("{}.v3.nii.gz", vol.series_uid)),
-        dir.join(format!("{}.v3.soft.gz", vol.series_uid)),
+        dir.join(format!("{}.v4.nii.gz", vol.series_uid)),
+        dir.join(format!("{}.v4.soft.gz", vol.series_uid)),
     ))
 }
 

@@ -202,3 +202,158 @@ pub fn zoom_labels(src: &[u8], dims: [usize; 3], out_dims: [usize; 3]) -> Vec<u8
         });
     out
 }
+
+/// Per axis `[start, end)`: an index box.
+pub type BBox = [[usize; 2]; 3];
+
+/// Bounding box of the voxels carrying any of `labels`, widened by `margin` voxels
+/// per axis and clamped to the volume (TotalSegmentator's `get_bbox_from_mask`).
+/// `None` if there are none.
+pub fn bounding_box(
+    src: &[u8],
+    dims: [usize; 3],
+    labels: &[u8],
+    margin: [usize; 3],
+) -> Option<BBox> {
+    let wanted: [bool; 256] = std::array::from_fn(|v| labels.contains(&(v as u8)));
+    let (nx, ny) = (dims[0], dims[1]);
+    let found = src
+        .par_chunks(nx * ny)
+        .enumerate()
+        .filter_map(|(z, slab)| {
+            let mut b = [[usize::MAX, 0], [usize::MAX, 0], [z, z + 1]];
+            for (i, &l) in slab.iter().enumerate() {
+                if wanted[l as usize] {
+                    let (x, y) = (i % nx, i / nx);
+                    b[0] = [b[0][0].min(x), b[0][1].max(x + 1)];
+                    b[1] = [b[1][0].min(y), b[1][1].max(y + 1)];
+                }
+            }
+            (b[0][0] != usize::MAX).then_some(b)
+        })
+        .reduce_with(|a, b| {
+            std::array::from_fn(|i| [a[i][0].min(b[i][0]), a[i][1].max(b[i][1])])
+        })?;
+    Some(std::array::from_fn(|a| {
+        [
+            found[a][0].saturating_sub(margin[a]),
+            (found[a][1] + margin[a]).min(dims[a]),
+        ]
+    }))
+}
+
+/// The voxels of `src` inside `bbox`, x fastest.
+pub fn crop<T: Copy + Send + Sync>(src: &[T], dims: [usize; 3], bbox: BBox) -> Vec<T> {
+    let [[x0, x1], [y0, y1], [z0, z1]] = bbox;
+    let (nx, ny) = (dims[0], dims[1]);
+    (z0..z1)
+        .into_par_iter()
+        .flat_map_iter(|z| {
+            (y0..y1).flat_map(move |y| {
+                let row = nx * (y + ny * z);
+                src[row + x0..row + x1].iter().copied()
+            })
+        })
+        .collect()
+}
+
+/// Calls `f(dst voxel, src value)` for each voxel of `src` (the contents of `bbox`,
+/// x fastest), in order.
+pub fn paste<T: Copy>(
+    dst: &mut [T],
+    dims: [usize; 3],
+    bbox: BBox,
+    src: &[T],
+    mut f: impl FnMut(&mut T, T),
+) {
+    let [[x0, x1], [y0, y1], [z0, z1]] = bbox;
+    let (nx, ny) = (dims[0], dims[1]);
+    let mut values = src.iter().copied();
+    for z in z0..z1 {
+        for y in y0..y1 {
+            let row = nx * (y + ny * z);
+            for (o, v) in dst[row + x0..row + x1].iter_mut().zip(&mut values) {
+                f(o, v);
+            }
+        }
+    }
+}
+
+/// Sets `nodes[n]` (a grid of `node_dims` spanning the volume corner to corner, as
+/// [`zoom_labels`] samples it) for the node nearest each voxel flagged in `voxels`
+/// (the contents of `bbox`, x fastest).
+pub fn mark_nodes(
+    nodes: &mut [bool],
+    node_dims: [usize; 3],
+    dims: [usize; 3],
+    bbox: BBox,
+    voxels: &[bool],
+) {
+    let nearest = |a: usize, v: usize| {
+        let scale = (node_dims[a] - 1) as f64 / (dims[a] - 1).max(1) as f64;
+        ((v as f64 * scale).round() as usize).min(node_dims[a] - 1)
+    };
+    let [[x0, x1], [y0, y1], [z0, _]] = bbox;
+    let (w, h) = (x1 - x0, y1 - y0);
+    for (i, _) in voxels.iter().enumerate().filter(|(_, c)| **c) {
+        let (x, y, z) = (x0 + i % w, y0 + (i / w) % h, z0 + i / (w * h));
+        let n = [nearest(0, x), nearest(1, y), nearest(2, z)];
+        nodes[n[0] + node_dims[0] * (n[1] + node_dims[1] * n[2])] = true;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bounding_box_widens_and_clamps() {
+        let dims = [6, 5, 4];
+        let mut labels = vec![0u8; 6 * 5 * 4];
+        labels[2 + 6 * (1 + 5 * 1)] = 7; // (2, 1, 1)
+        labels[3 + 6 * (3 + 5 * 2)] = 7; // (3, 3, 2)
+        labels[5 + 6 * (4 + 5 * 3)] = 9; // other label
+        assert_eq!(
+            bounding_box(&labels, dims, &[7], [0; 3]),
+            Some([[2, 4], [1, 4], [1, 3]])
+        );
+        assert_eq!(
+            bounding_box(&labels, dims, &[7], [1, 2, 3]),
+            Some([[1, 5], [0, 5], [0, 4]])
+        );
+        assert_eq!(bounding_box(&labels, dims, &[3], [0; 3]), None);
+    }
+
+    #[test]
+    fn crop_and_paste_round_trip() {
+        let dims = [4, 3, 2];
+        let src: Vec<u8> = (0..24).collect();
+        let bbox = [[1, 3], [1, 3], [0, 2]];
+        let cropped = crop(&src, dims, bbox);
+        assert_eq!(cropped, [5, 6, 9, 10, 17, 18, 21, 22]);
+        let mut dst = vec![0u8; 24];
+        paste(&mut dst, dims, bbox, &cropped, |o, v| *o = v);
+        for (i, (&d, &s)) in dst.iter().zip(&src).enumerate() {
+            let (x, y) = (i % 4, (i / 4) % 3);
+            assert_eq!(
+                d,
+                if (1..3).contains(&x) && (1..3).contains(&y) {
+                    s
+                } else {
+                    0
+                }
+            );
+        }
+    }
+
+    #[test]
+    fn mark_nodes_picks_nearest() {
+        // 9 voxels per axis onto 5 nodes: voxel v lies at node v / 2, rounded.
+        let mut nodes = vec![false; 125];
+        let bbox = [[4, 6], [0, 1], [8, 9]];
+        mark_nodes(&mut nodes, [5; 3], [9; 3], bbox, &[false, true]);
+        let marked: Vec<usize> = (0..125).filter(|&i| nodes[i]).collect();
+        // Only voxel (5, 0, 8) is flagged: node (3, 0, 4).
+        assert_eq!(marked, [3 + 25 * 4]);
+    }
+}

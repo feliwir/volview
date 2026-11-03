@@ -108,7 +108,8 @@ pub struct SoftLabelGrid<'a> {
     /// Volume axis each grid axis runs along, and whether it runs reversed.
     pub src_axis: [usize; 3],
     pub flip: [bool; 3],
-    /// Per node, grid axis 0 fastest: best label, runner-up label, margin × 16, unused.
+    /// Per node, grid axis 0 fastest: best label, runner-up label, margin × 16, and 1
+    /// where finer subtask labels replaced the ones the margins describe.
     pub data: &'a [[u8; 4]],
 }
 
